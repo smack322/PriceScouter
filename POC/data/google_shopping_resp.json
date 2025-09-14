@@ -1,0 +1,91 @@
+keys: [
+  "search_metadata",
+  "search_parameters",
+  "search_information",
+  "shopping_results",
+  "categorized_shopping_results",
+  "ai_overview",
+  "filters",
+  "serpapi_pagination"
+]
+found 40 items
+{
+  "title": "Otterbox Defender Pro Series Case for iPhone 15/ 14/ 13",
+  "price": "$79.99",
+  "source": "Best Buy",
+  "rating": 4.6,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/7920095867532335495?gl=us"
+}
+  {
+  "title": "Apple iPhone 15 Plus Silicone Case with MagSafe",
+  "price": "$49.00",
+  "source": "Apple",
+  "rating": 4.9,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/11249931066118781792?gl=us"
+}
+    {
+  "title": "CandyShell Grip Glitter Magsafe Apple iPhone 15 Cases",
+  "price": "$24.92",
+  "source": "Walmart",
+  "rating": 4.4,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/7887246612375893824?gl=us"
+}
+      {
+  "title": "iPhone 15/14 Charm Case",
+  "price": "$7.00",
+  "source": "Five Below",
+  "rating": None,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/18360284153213468994?gl=us"
+}
+        {
+  "title": "Speck Presidio2 Grip Case for iPhone 15/iPhone 14/iPhone 13",
+  "price": "$21.99",
+  "source": "Best Buy",
+  "rating": 4.6,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/11472173209955254671?gl=us"
+}
+          {
+  "title": "Mous Clarity 2.0 MagSafe Compatible Clear Case for iPhone 15",
+  "price": "$34.99",
+  "source": "Mous",
+  "rating": 4.2,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/9870236108100683970?gl=us"
+}
+            {
+  "title": "Casely iPhone 15 Compatible with MagSafe Fit Check Green Checkerboard Case",
+  "price": "$24.90",
+  "source": "Casely",
+  "rating": 4.5,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/16819020959390082362?gl=us"
+}
+              {
+  "title": "Insignia Hard-Shell Case with MagSafe for iPhone 15 Pro Max",
+  "price": "$24.99",
+  "source": "Best Buy",
+  "rating": 4.7,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/13768320001945566171?gl=us"
+}
+                {
+  "title": "Apple MagSafe Case for iPhone 15",
+  "price": "$49.00",
+  "source": "Walmart",
+  "rating": 4.6,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/10004947291042751372?gl=us"
+}
+                  {
+  "title": "OtterBox Symmetry MagSafe Case for Apple iPhone 15 / iPhone 14 / iPhone 13",
+  "price": "$37.99",
+  "source": "Best Buy",
+  "rating": 4.8,
+  "link": None,
+  "product_link": "https: //www.google.com/shopping/product/14575746103171282213?gl=us"
+}
