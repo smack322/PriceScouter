@@ -1,61 +1,265 @@
-# app.py
-from typing import Annotated
-from typing_extensions import TypedDict
+# app.py — Option 2: single fanout key with merge reducer + correct respond()
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+from typing import Annotated, Any, Dict, List, Optional, TypedDict
+
+from dotenv import load_dotenv
+
+# Load env BEFORE importing tools
+load_dotenv(override=False)
+_ = os.environ.get("OPENAI_API_KEY")
 
 from langchain.chat_models import init_chat_model
-from langchain_core.messages import AnyMessage
-from langgraph.graph import StateGraph, START, END
+from langchain_core.messages import AnyMessage, HumanMessage
+from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import add_messages
-from langgraph.prebuilt import ToolNode, tools_condition
 
 from agent_keepa import keepa_search
 from agent_serp import google_shopping
-import os
-from dotenv import load_dotenv
+from agent_ebay import ebay_search
 
-load_dotenv(override=False)
+# --- add this helper ---
+from decimal import Decimal
+from datetime import date, datetime
+import numpy as np
 
-os.environ["OPENAI_API_KEY"]
-# ---- State ----
+def _to_builtin(o):
+    """Coerce common non-JSON-native types to JSON-serializable builtins."""
+    # numpy / pandas scalars & arrays
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, (np.floating,)):
+        return float(o)
+    if isinstance(o, (np.bool_,)):
+        return bool(o)
+    if isinstance(o, (np.ndarray,)):
+        return o.tolist()
+    # sets / generators
+    if isinstance(o, set):
+        return list(o)
+    # datetimes / decimals
+    if isinstance(o, (datetime, date)):
+        return o.isoformat()
+    if isinstance(o, Decimal):
+        return float(o)
+    # pydantic models
+    if hasattr(o, "model_dump"):
+        return o.model_dump()
+    # objects with __dict__
+    if hasattr(o, "__dict__"):
+        return {k: _to_builtin(v) for k, v in vars(o).items()}
+    # give up → let json raise
+    raise TypeError(f"Object of type {type(o).__name__} is not JSON serializable")
+
+# ---------------- Reducer for concurrent writes to 'fanout' ---------------- #
+def merge_dicts(
+    a: Dict[str, List[dict]] | None,
+    b: Dict[str, List[dict]] | None
+) -> Dict[str, List[dict]]:
+    out: Dict[str, List[dict]] = {}
+    if a:
+        out.update(a)
+    if b:
+        out.update(b)
+    return out
+
+
+# --------------------------------- State ---------------------------------- #
+class Parsed(TypedDict):
+    query: str
+    max_price: Optional[float]
+    zip_code: Optional[str]
+    country: Optional[str]
+
 class State(TypedDict):
-    messages: Annotated[list[AnyMessage], add_messages]
+    messages: Annotated[List[AnyMessage], add_messages]
+    parsed: Parsed
+    # Single key for parallel writes; the reducer merges them
+    fanout: Annotated[Dict[str, List[dict]], merge_dicts]
+    results: List[dict]
 
-# ---- LLM bound to tools ----
-llm = init_chat_model("openai:gpt-4.1")
-tools = [keepa_search, google_shopping]
-llm_with_tools = llm.bind_tools(tools)
 
-# ---- Agent node: let the model decide to call tools or respond ----
-def call_agent(state: State):
-    return {"messages": [llm_with_tools.invoke(state["messages"])]}
+# ------------------------ 1) Extract parameters ---------------------------- #
+extract_llm = init_chat_model("openai:gpt-4.1-mini")
 
-# ---- Tool node: executes whichever tool the model requested ----
-tool_node = ToolNode(tools)
+def extract_params(state: State):
+    sys = (
+        "Extract shopping params as JSON with keys: "
+        "query (string, required), max_price (float | null), zip_code (string | null), country (string | null). "
+        "Be conservative; if unsure, use null."
+    )
+    last = state["messages"][-1].content if state["messages"] else ""
+    msg = extract_llm.invoke([
+        ("system", sys),
+        ("user", f"User request:\n{last}\n\nReturn only JSON.")
+    ])
 
-# ---- Graph ----
+    try:
+        parsed = json.loads(msg.content)
+    except Exception:
+        parsed = {"query": last, "max_price": None, "zip_code": None, "country": None}
+
+    parsed.setdefault("query", last)
+    parsed.setdefault("max_price", None)
+    parsed.setdefault("zip_code", "19406")
+    parsed.setdefault("country", "US")
+
+    # Coerce max_price to float if string
+    try:
+        if parsed["max_price"] is not None:
+            parsed["max_price"] = float(parsed["max_price"])
+    except Exception:
+        parsed["max_price"] = None
+
+    return {"parsed": parsed}
+
+
+# --------------------- 2) Fan-out: run tools in parallel ------------------- #
+async def _safe_ainvoke(tool, kwargs: Dict[str, Any]) -> List[dict]:
+    try:
+        return await tool.ainvoke(kwargs)
+    except Exception as e:
+        return [{"_error": f"{getattr(tool, 'name', 'tool')}: {e}"}]
+
+async def call_keepa(state: State):
+    p = state["parsed"]
+    rows = await _safe_ainvoke(
+        keepa_search,
+        {"keyword": p["query"], "domain": p.get("country", "US"), "max_results": 10},
+    )
+    return {"fanout": {"keepa": rows}}
+
+async def call_serp(state: State):
+    p = state["parsed"]
+    rows = await _safe_ainvoke(
+        google_shopping,
+        {"keyword": p["query"], "max_results": 10, "country": p.get("country", "US")},
+    )
+    return {"fanout": {"serp": rows}}
+
+async def call_ebay(state: State):
+    p = state["parsed"]
+    rows = await _safe_ainvoke(
+        ebay_search,
+        {
+            "keyword": p["query"],
+            "zip_code": p.get("zip_code") or "19406",
+            "country": p.get("country", "US"),
+            "limit": 50,
+            "max_results": 10,
+            "fixed_price_only": False,
+        },
+    )
+    return {"fanout": {"ebay": rows}}
+
+
+# -------------------------- 3) Aggregate results --------------------------- #
+def aggregate(state: State):
+    p = state["parsed"]
+    max_price = p.get("max_price")
+
+    fan = state.get("fanout") or {}
+    keepa_rows = fan.get("keepa", []) or []
+    serp_rows  = fan.get("serp",  []) or []
+    ebay_rows  = fan.get("ebay",  []) or []
+
+    all_rows: List[dict] = []
+    for src, rows in (("keepa", keepa_rows), ("serp", serp_rows), ("ebay", ebay_rows)):
+        for r in rows:
+            r["_source"] = src
+        all_rows.extend(rows)
+
+    def total_cost(r: dict) -> float:
+        # eBay: already has 'total'
+        if isinstance(r.get("total"), (int, float)):
+            return float(r["total"])
+        # Keepa/Serp: price (+ shipping if provided)
+        price = None
+        for k in ("buybox_price", "price", "current_price"):
+            if r.get(k) is not None:
+                try:
+                    price = float(r[k])
+                    break
+                except Exception:
+                    pass
+        shipping = 0.0
+        if r.get("shipping") is not None:
+            try:
+                shipping = float(r["shipping"])
+            except Exception:
+                pass
+        return (price or 0.0) + shipping
+
+    if isinstance(max_price, (int, float)):
+        all_rows = [r for r in all_rows if total_cost(r) <= float(max_price)]
+
+    all_rows.sort(key=total_cost)
+    return {"results": all_rows}
+
+
+# -------------------------- 4) Final response ------------------------------ #
+final_llm = init_chat_model("openai:gpt-4.1")
+
+def respond(state: State):
+    p = state["parsed"]
+    rows = state.get("results", [])[:15]
+
+    sys = "You are a concise shopping assistant that merges multi-source listings."
+
+    # ✅ serialize with a default that converts numpy/pandas/etc. to builtins
+    rows_json = json.dumps(rows, ensure_ascii=False, default=_to_builtin)
+
+    user = (
+        f"Query: {p['query']}\n"
+        f"Max price: {p.get('max_price')}\n"
+        f"ZIP: {p.get('zip_code')} Country: {p.get('country')}\n\n"
+        "Here are aggregated results in JSON. Summarize a short ranked list with: "
+        "estimated total (or price), shipping if known, source (keepa/serp/ebay), title, and a direct link.\n\n"
+        f"{rows_json}"
+    )
+
+    msg = final_llm.invoke([("system", sys), ("user", user)])
+    return {"messages": [msg]}
+
+
+# --------------------------- Build the graph ------------------------------- #
 graph = StateGraph(State)
-graph.add_node("agent", call_agent)
-graph.add_node("tools", tool_node)
 
-# Start with agent. If it asks for a tool, go to tools; otherwise end.
-graph.add_edge(START, "agent")
-graph.add_conditional_edges("agent", tools_condition)  # routes to "tools" or END automatically
-graph.add_edge("tools", "agent")  # after tools run, go back to the agent for final answer
+graph.add_node("extract_params", extract_params)
+graph.add_node("keepa", call_keepa)
+graph.add_node("serp", call_serp)
+graph.add_node("ebay", call_ebay)
+graph.add_node("aggregate", aggregate)
+graph.add_node("respond", respond)
+
+graph.add_edge(START, "extract_params")
+graph.add_edge("extract_params", "keepa")
+graph.add_edge("extract_params", "serp")
+graph.add_edge("extract_params", "ebay")
+graph.add_edge("keepa", "aggregate")
+graph.add_edge("serp", "aggregate")
+graph.add_edge("ebay", "aggregate")
+graph.add_edge("aggregate", "respond")
+graph.add_edge("respond", END)
 
 app = graph.compile()
 
+
+# --------------------------------- Main ------------------------------------ #
 if __name__ == "__main__":
-    user_msg = {
-        "role": "user",
-        "content": "Find iPhone 15 cases under $20. Show buybox price, regular price, shipping cost, sales rank and direct link to the product."
-    }
+    async def main():
+        user_msg = {
+            "role": "user",
+            "content": (
+                "Find iPhone 15 cases under $20. Show buybox price, regular price, "
+                "shipping cost, sales rank and direct link to the product. Ship to 19406, US."
+            ),
+        }
+        result = await app.ainvoke({"messages": [user_msg]})
+        print("\n=== FINAL ANSWER ===")
+        print(result["messages"][-1].content)
 
-    # Easiest: single invoke
-    result = app.invoke({"messages": [user_msg]})
-    print("\n=== FINAL ANSWER ===")
-    print(result["messages"][-1].content)
-
-    # (Optional) Dev mode: watch the flow (tool calls, results, final)
-    # for event in app.stream({"messages": [user_msg]}):
-    #     print("--- EVENT ---")
-    #     print(event)
+    asyncio.run(main())
