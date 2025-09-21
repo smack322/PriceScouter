@@ -5,8 +5,10 @@
 import os
 import time
 import pandas as pd
+import asyncio
 import streamlit as st
 from dotenv import load_dotenv
+from agents.client import run_agents
 
 try:
     from serpapi import GoogleSearch
@@ -24,7 +26,7 @@ st.set_page_config(page_title="PriceScouter – Mock Search", page_icon="🛒", 
 st.sidebar.title("Settings")
 provider = st.sidebar.selectbox(
     "Data source",
-    ["Mock data", "SerpApi – Google Shopping"],
+    ["Mock data", "SerpApi – Google Shopping", "All"],
     help="Mock data requires no keys. SerpApi calls Google's Shopping results."
 )
 
@@ -136,38 +138,69 @@ if submitted and q.strip():
         try:
             if provider == "Mock data":
                 df = mock_search(q, n=max_results)
-            else:
+            elif provider == "SerpApi – Google Shopping":
                 df = serpapi_search(q, api_key, location, n=max_results)
 
-            # Normalize a float price column for sorting/filtering
-            df["price_value"] = df["price"].apply(normalize_price_str_to_float)
+            elif provider == "All":  # Agents (Keepa + Google + eBay)
+                # 🔽 This is the line you asked about — it goes right here:
+                rows = asyncio.run(
+                    run_agents(
+                        q,
+                        zip_code=st.sidebar.text_input("Ship to ZIP", value="19406", key="zip_agents"),
+                        country="US",  # or expose a sidebar input like you do for SerpApi
+                        max_price=(max_price or None),
+                        top_n=max_results,
+                    )
+                )
+                # Convert to DataFrame; coerce any odd types to builtins
+                import json
+                import numpy as np
+                def _to_builtin(o):
+                    if isinstance(o, (np.integer,)): return int(o)
+                    if isinstance(o, (np.floating,)): return float(o)
+                    if isinstance(o, (np.bool_,)): return bool(o)
+                    if isinstance(o, (np.ndarray,)): return o.tolist()
+                    return o
+                rows = json.loads(json.dumps(rows, default=_to_builtin))
+                df = pd.DataFrame(rows) if rows else pd.DataFrame([])
 
-            # Apply optional price filters
+                # Normalize a 'price' string column for display parity with other providers
+                if "total" in df.columns and "price" not in df.columns:
+                    df["price"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+                if "url" in df.columns and "link" not in df.columns:
+                    df["link"] = df["url"]
+
+            # --- from here down, keep your existing normalization/sorting/display ---
+            df["price_value"] = df["price"].apply(normalize_price_str_to_float) if "price" in df.columns else None
+
             if min_price > 0:
                 df = df[df["price_value"].fillna(10**9) >= min_price]
             if max_price > 0:
                 df = df[df["price_value"].fillna(0) <= max_price]
 
-            # Sorting
             if sort_by == "Price (asc)":
                 df = df.sort_values(by=["price_value", "title"], ascending=[True, True], na_position="last")
             elif sort_by == "Price (desc)":
                 df = df.sort_values(by=["price_value", "title"], ascending=[False, True], na_position="last")
-            elif sort_by == "Rating (desc)":
+            elif sort_by == "Rating (desc)" and "rating" in df.columns:
                 df = df.sort_values(by=["rating", "title"], ascending=[False, True], na_position="last")
 
-            # Pretty display
-            show_cols = ["title", "price", "source", "rating", "link", "product_link"]
+            show_cols = [c for c in ["title", "price", "source", "merchant", "seller",
+                                    "rating", "link", "product_link", "_source"] if c in df.columns]
             st.caption(f"Found {len(df)} item(s)")
-            st.dataframe(df[show_cols], use_container_width=True, height=480)
+            st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, height=480)
 
-            # Optional: expandable cards
             with st.expander("Preview top 5"):
                 for _, row in df.head(5).iterrows():
+                    title = row.get("title", "")
+                    price = row.get("price", "")
+                    src   = row.get("source") or row.get("merchant") or row.get("seller") or row.get("_source", "")
+                    rating = row.get("rating", "—")
+                    link = row.get("link") or row.get("product_link")
                     st.markdown(
-                        f"**{row['title']}**  \n"
-                        f"Price: {row['price']}  |  Source: {row['source']}  |  Rating: {row.get('rating','—')}  \n"
-                        f"[Product Page]({row['link']}) · [Google Shopping]({row['product_link']})"
+                        f"**{title}**  \n"
+                        f"Price: {price}  |  Source: {src}  |  Rating: {rating}  \n"
+                        f"{('[Open](' + str(link) + ')') if link else ''}"
                     )
         except Exception as e:
             st.error(f"Error: {e}")
