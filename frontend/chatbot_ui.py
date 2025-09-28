@@ -1,14 +1,17 @@
 # app.py
 # Streamlit mock UI for product search with optional SerpApi integration
 # pip install streamlit google-search-results pandas python-dotenv
-
+import sys
 import os
 import time
 import pandas as pd
 import asyncio
 import streamlit as st
 from dotenv import load_dotenv
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from agents.client import run_agents
+from agents.agent_keepa import keepa_search
+from agents.agent_ebay import ebay_search
 
 try:
     from serpapi import GoogleSearch
@@ -26,7 +29,7 @@ st.set_page_config(page_title="PriceScouter – Mock Search", page_icon="🛒", 
 st.sidebar.title("Settings")
 provider = st.sidebar.selectbox(
     "Data source",
-    ["Mock data", "SerpApi – Google Shopping", "All"],
+    ["Mock data", "SerpApi – Google Shopping", "Keepa - Amazon", "eBay", "All"],
     help="Mock data requires no keys. SerpApi calls Google's Shopping results."
 )
 
@@ -103,10 +106,49 @@ def serpapi_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
         )
     return pd.DataFrame(items)
 
-def normalize_price_str_to_float(x: str | None) -> float | None:
-    if not x:
+@st.cache_data(show_spinner=False)
+def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
+    # Calls the keepa_search agent
+    items = asyncio.run(
+        keepa_search.ainvoke({
+            "keyword": q,
+            "domain": "US",
+            "max_results": n,
+        })
+    )
+    df = pd.DataFrame(items) if items else pd.DataFrame([])
+    if "price_new" in df.columns and "price" not in df.columns:
+        df["price"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+    if "link" not in df.columns and "asin" in df.columns:
+        df["link"] = df["asin"].apply(lambda asin: f"https://www.amazon.com/dp/{asin}" if pd.notnull(asin) else None)
+    return df
+
+@st.cache_data(show_spinner=False)
+def ebay_agent_search(q: str, zip_code: str, n: int = 20) -> pd.DataFrame:
+    items = asyncio.run(
+        ebay_search.ainvoke({
+            "keyword": q,
+            "zip_code": zip_code,
+            "country": "US",
+            "limit": n,
+            "max_results": n,
+            "fixed_price_only": False,
+            "sandbox": False,
+        })
+    )
+    df = pd.DataFrame(items) if items else pd.DataFrame([])
+    if "total" in df.columns and "price" not in df.columns:
+        df["price"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+    if "url" in df.columns and "link" not in df.columns:
+        df["link"] = df["url"]
+    return df
+
+def normalize_price_str_to_float(x):
+    if x is None:
         return None
-    # handles "$19.99", "$19.99 to $24.99", "$19.99 + tax", etc. (take the first number)
+    if isinstance(x, (int, float)):
+        return float(x)
+    # Now safe to call replace on x
     import re
     m = re.search(r"\d+(?:\.\d+)?", x.replace(",", ""))
     return float(m.group()) if m else None
@@ -140,6 +182,11 @@ if submitted and q.strip():
                 df = mock_search(q, n=max_results)
             elif provider == "SerpApi – Google Shopping":
                 df = serpapi_search(q, api_key, location, n=max_results)
+            elif provider == "Keepa - Amazon":
+                df = keepa_agent_search(q, n=max_results)
+            elif provider == "eBay":
+                zip_code = st.sidebar.text_input("Ship to ZIP", value="19382", key="zip_ebay")
+                df = ebay_agent_search(q, zip_code, n=max_results)
 
             elif provider == "All":  # Agents (Keepa + Google + eBay)
                 # 🔽 This is the line you asked about — it goes right here:

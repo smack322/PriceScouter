@@ -17,9 +17,13 @@ from langchain_core.messages import AnyMessage, HumanMessage
 from langgraph.graph import START, END, StateGraph
 from langgraph.graph.message import add_messages
 
-from agent_keepa import keepa_search
-from agent_serp import google_shopping
-from agent_ebay import ebay_search
+# from agent_keepa import keepa_search
+# from agent_serp import google_shopping
+# from agent_ebay import ebay_search
+
+from agents.agent_keepa import keepa_search
+from agents.agent_serp import google_shopping
+from agents.agent_ebay import ebay_search
 
 # --- add this helper ---
 from decimal import Decimal
@@ -132,11 +136,23 @@ async def call_keepa(state: State):
     )
     return {"fanout": {"keepa": rows}}
 
+# async def call_serp(state: State):
+#     p = state["parsed"]
+#     rows = await _safe_ainvoke(
+#         google_shopping,
+#         {"keyword": p["query"], "max_results": 10, "country": p.get("country", "US")},
+#     )
+#     return {"fanout": {"serp": rows}}
+
 async def call_serp(state: State):
     p = state["parsed"]
     rows = await _safe_ainvoke(
         google_shopping,
-        {"keyword": p["query"], "max_results": 10, "country": p.get("country", "US")},
+        {
+            "q": p["query"],
+            "num": 10,
+            "location": p.get("zip_code") or p.get("country", "US"),  # or more relevant location string
+        },
     )
     return {"fanout": {"serp": rows}}
 

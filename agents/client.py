@@ -1,5 +1,6 @@
 import asyncio
-from .app import app  # your compiled graph
+from agents.app import app  # your compiled graph
+
 
 async def run_agents(query: str, *, zip_code="19406", country="US", max_price: float | None = None, top_n: int = 15):
     # The graph still expects messages, but your extractor will see everything in the message.

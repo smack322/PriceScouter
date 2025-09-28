@@ -4,7 +4,7 @@ from langchain_core.tools import tool
 
 # Reuse your robust implementation from earlier
 # (make sure ebay_tool.py is on your PYTHONPATH)
-from ebay_tool import search_ebay_cheapest_tool
+from agents.ebay_tool import search_ebay_cheapest_tool
 
 @tool
 def ebay_search(
