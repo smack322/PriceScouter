@@ -91,3 +91,66 @@ def test_google_shopping_search_empty(monkeypatch):
     monkeypatch.setattr(serp_tools, "google_shopping_search_raw", fake_raw)
     results = serp_tools.google_shopping_search("nothing")
     assert results == []
+
+def test_eur_to_usd_conversion():
+    assert serp_tools.convert_to_usd(10, "EUR") == pytest.approx(10.75)  # Example value
+
+def test_gbp_to_usd_conversion():
+    assert serp_tools.convert_to_usd(10, "GBP") == pytest.approx(12.50)
+
+def test_unknown_currency_flagged():
+    result = serp_tools.normalize_price("100", "XYZ")
+    assert result["unsupported_currency"] is True
+
+def test_mixed_currencies_sorted():
+    items = [
+        {"price": 10, "currency": "USD"},
+        {"price": 10, "currency": "EUR"},
+        {"price": 10, "currency": "GBP"},
+    ]
+    norm = serp_tools.sort_by_usd(items)
+    prices = [i["usd_price"] for i in norm]
+    assert prices == sorted(prices)
+
+def test_robots_txt_disallowed_url(monkeypatch):
+    monkeypatch.setattr(serp_tools, "is_allowed_by_robots", lambda url: False)
+    result = serp_tools.fetch_url("http://disallowed.com/item")
+    assert result["status"] == "skipped_robots"
+
+def test_url_not_in_allowlist(monkeypatch):
+    monkeypatch.setattr(serp_tools, "is_url_in_allowlist", lambda url: False)
+    result = serp_tools.fetch_url("http://notallowed.com/item")
+    assert result["status"] == "skipped_allowlist"
+
+def test_mixed_allowed_disallowed(monkeypatch):
+    urls = ["http://allowed.com/item", "http://disallowed.com/item"]
+    monkeypatch.setattr(serp_tools, "is_allowed_by_robots", lambda url: "allowed" in url)
+    fetched = [serp_tools.fetch_url(u) for u in urls]
+    statuses = [r["status"] for r in fetched]
+    assert statuses == ["fetched", "skipped_robots"]
+
+def test_fail_fast_without_env(monkeypatch):
+    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
+    with pytest.raises(RuntimeError):
+        ebay_tool._get_basic_auth_header()
+
+def test_secrets_redacted_in_logs(monkeypatch, caplog):
+    os.environ["EBAY_CLIENT_ID"] = "secretid"
+    os.environ["EBAY_CLIENT_SECRET"] = "secretsecret"
+    # Simulate function that logs
+    with caplog.at_level("INFO"):
+        ebay_tool.log_vendor_call({"client_id": os.environ["EBAY_CLIENT_ID"]})
+    for record in caplog.records:
+        assert "secretid" not in record.getMessage()
+        assert "secretsecret" not in record.getMessage()
+
+def test_no_hardcoded_secrets():
+    # Simple static scan for 'secret' or API keys in source
+    import glob
+    files = glob.glob("agents/*.py")
+    for fname in files:
+        with open(fname) as f:
+            content = f.read()
+            assert "sk_test_" not in content
+            assert "AIza" not in content
