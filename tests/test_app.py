@@ -1,4 +1,5 @@
 import pytest
+import time
 import numpy as np
 from decimal import Decimal
 from datetime import datetime, date
@@ -115,3 +116,58 @@ def test_respond_summarizes(monkeypatch):
     }
     out = respond(state)
     assert out["messages"][0].content == "Summary message"
+
+@pytest.mark.asyncio
+async def test_end_to_end_latency():
+    start = time.time()
+    await run_agents("iphone case")
+    elapsed = time.time() - start
+    assert elapsed < 15
+
+@pytest.mark.asyncio
+async def test_vendor_timeout_enforced(monkeypatch):
+    class SlowApp:
+        async def ainvoke(self, state):
+            time.sleep(5)  # Simulate slow vendor
+            return {"results": []}
+    monkeypatch.setattr("agents.app", "app", SlowApp())
+    start = time.time()
+    await run_agents("slow product")
+    elapsed = time.time() - start
+    assert elapsed < 15  # Still completes in overall limit
+
+@pytest.mark.asyncio
+async def test_concurrent_searches_latency():
+    import asyncio
+    start = time.time()
+    await asyncio.gather(
+        run_agents("case1"), run_agents("case2"), run_agents("case3"),
+        run_agents("case4"), run_agents("case5")
+    )
+    elapsed = time.time() - start
+    assert elapsed < 20  # P99 requirement
+
+def test_vendor_call_emit_log(monkeypatch, caplog):
+    with caplog.at_level("INFO"):
+        app.log_vendor_call(vendor="ebay", duration=1.1, status="ok", http_code=200, attempt=1, trace_id="abc123")
+    found = False
+    for record in caplog.records:
+        if "vendor" in record.getMessage() and "trace_id" in record.getMessage():
+            found = True
+    assert found
+
+def test_error_path_logging(monkeypatch, caplog):
+    with caplog.at_level("ERROR"):
+        app.log_vendor_error(vendor="keepa", status="error", trace_id="xyz456", stack="...")
+    for record in caplog.records:
+        assert "error" in record.getMessage()
+        assert "trace_id" in record.getMessage()
+        assert "stack" not in record.getMessage()  # stack trace should be summarized or omitted
+
+def test_log_counts_for_multiple_vendors(monkeypatch, caplog):
+    vendors = ["ebay", "keepa", "serp"]
+    with caplog.at_level("INFO"):
+        for v in vendors:
+            app.log_vendor_call(vendor=v, duration=1.0, status="ok", http_code=200, attempt=1, trace_id=f"trace_{v}")
+    count = sum(1 for record in caplog.records if "vendor" in record.getMessage())
+    assert count == 3

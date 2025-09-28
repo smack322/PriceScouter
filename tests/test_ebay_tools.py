@@ -145,3 +145,29 @@ def test_get_basic_auth_header_missing(monkeypatch):
     monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
     with pytest.raises(RuntimeError):
         ebay_tool._get_basic_auth_header()
+
+def test_fail_fast_without_env(monkeypatch):
+    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
+    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
+    with pytest.raises(RuntimeError):
+        ebay_tool._get_basic_auth_header()
+
+def test_secrets_redacted_in_logs(monkeypatch, caplog):
+    os.environ["EBAY_CLIENT_ID"] = "secretid"
+    os.environ["EBAY_CLIENT_SECRET"] = "secretsecret"
+    # Simulate function that logs
+    with caplog.at_level("INFO"):
+        ebay_tool.log_vendor_call({"client_id": os.environ["EBAY_CLIENT_ID"]})
+    for record in caplog.records:
+        assert "secretid" not in record.getMessage()
+        assert "secretsecret" not in record.getMessage()
+
+def test_no_hardcoded_secrets():
+    # Simple static scan for 'secret' or API keys in source
+    import glob
+    files = glob.glob("agents/*.py")
+    for fname in files:
+        with open(fname) as f:
+            content = f.read()
+            assert "sk_test_" not in content
+            assert "AIza" not in content
