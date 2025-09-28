@@ -1,12 +1,17 @@
 # app.py
 # Streamlit mock UI for product search with optional SerpApi integration
 # pip install streamlit google-search-results pandas python-dotenv
-
+import sys
 import os
 import time
 import pandas as pd
+import asyncio
 import streamlit as st
 from dotenv import load_dotenv
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from agents.client import run_agents
+from agents.agent_keepa import keepa_search
+from agents.agent_ebay import ebay_search
 
 try:
     from serpapi import GoogleSearch
@@ -24,7 +29,7 @@ st.set_page_config(page_title="PriceScouter – Mock Search", page_icon="🛒", 
 st.sidebar.title("Settings")
 provider = st.sidebar.selectbox(
     "Data source",
-    ["Mock data", "SerpApi – Google Shopping"],
+    ["Mock data", "SerpApi – Google Shopping", "Keepa - Amazon", "eBay", "All"],
     help="Mock data requires no keys. SerpApi calls Google's Shopping results."
 )
 
@@ -101,10 +106,49 @@ def serpapi_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
         )
     return pd.DataFrame(items)
 
-def normalize_price_str_to_float(x: str | None) -> float | None:
-    if not x:
+@st.cache_data(show_spinner=False)
+def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
+    # Calls the keepa_search agent
+    items = asyncio.run(
+        keepa_search.ainvoke({
+            "keyword": q,
+            "domain": "US",
+            "max_results": n,
+        })
+    )
+    df = pd.DataFrame(items) if items else pd.DataFrame([])
+    if "price_new" in df.columns and "price" not in df.columns:
+        df["price"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+    if "link" not in df.columns and "asin" in df.columns:
+        df["link"] = df["asin"].apply(lambda asin: f"https://www.amazon.com/dp/{asin}" if pd.notnull(asin) else None)
+    return df
+
+@st.cache_data(show_spinner=False)
+def ebay_agent_search(q: str, zip_code: str, n: int = 20) -> pd.DataFrame:
+    items = asyncio.run(
+        ebay_search.ainvoke({
+            "keyword": q,
+            "zip_code": zip_code,
+            "country": "US",
+            "limit": n,
+            "max_results": n,
+            "fixed_price_only": False,
+            "sandbox": False,
+        })
+    )
+    df = pd.DataFrame(items) if items else pd.DataFrame([])
+    if "total" in df.columns and "price" not in df.columns:
+        df["price"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+    if "url" in df.columns and "link" not in df.columns:
+        df["link"] = df["url"]
+    return df
+
+def normalize_price_str_to_float(x):
+    if x is None:
         return None
-    # handles "$19.99", "$19.99 to $24.99", "$19.99 + tax", etc. (take the first number)
+    if isinstance(x, (int, float)):
+        return float(x)
+    # Now safe to call replace on x
     import re
     m = re.search(r"\d+(?:\.\d+)?", x.replace(",", ""))
     return float(m.group()) if m else None
@@ -136,38 +180,74 @@ if submitted and q.strip():
         try:
             if provider == "Mock data":
                 df = mock_search(q, n=max_results)
-            else:
+            elif provider == "SerpApi – Google Shopping":
                 df = serpapi_search(q, api_key, location, n=max_results)
+            elif provider == "Keepa - Amazon":
+                df = keepa_agent_search(q, n=max_results)
+            elif provider == "eBay":
+                zip_code = st.sidebar.text_input("Ship to ZIP", value="19382", key="zip_ebay")
+                df = ebay_agent_search(q, zip_code, n=max_results)
 
-            # Normalize a float price column for sorting/filtering
-            df["price_value"] = df["price"].apply(normalize_price_str_to_float)
+            elif provider == "All":  # Agents (Keepa + Google + eBay)
+                # 🔽 This is the line you asked about — it goes right here:
+                rows = asyncio.run(
+                    run_agents(
+                        q,
+                        zip_code=st.sidebar.text_input("Ship to ZIP", value="19406", key="zip_agents"),
+                        country="US",  # or expose a sidebar input like you do for SerpApi
+                        max_price=(max_price or None),
+                        top_n=max_results,
+                    )
+                )
+                # Convert to DataFrame; coerce any odd types to builtins
+                import json
+                import numpy as np
+                def _to_builtin(o):
+                    if isinstance(o, (np.integer,)): return int(o)
+                    if isinstance(o, (np.floating,)): return float(o)
+                    if isinstance(o, (np.bool_,)): return bool(o)
+                    if isinstance(o, (np.ndarray,)): return o.tolist()
+                    return o
+                rows = json.loads(json.dumps(rows, default=_to_builtin))
+                df = pd.DataFrame(rows) if rows else pd.DataFrame([])
 
-            # Apply optional price filters
+                # Normalize a 'price' string column for display parity with other providers
+                if "total" in df.columns and "price" not in df.columns:
+                    df["price"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+                if "url" in df.columns and "link" not in df.columns:
+                    df["link"] = df["url"]
+
+            # --- from here down, keep your existing normalization/sorting/display ---
+            df["price_value"] = df["price"].apply(normalize_price_str_to_float) if "price" in df.columns else None
+
             if min_price > 0:
                 df = df[df["price_value"].fillna(10**9) >= min_price]
             if max_price > 0:
                 df = df[df["price_value"].fillna(0) <= max_price]
 
-            # Sorting
             if sort_by == "Price (asc)":
                 df = df.sort_values(by=["price_value", "title"], ascending=[True, True], na_position="last")
             elif sort_by == "Price (desc)":
                 df = df.sort_values(by=["price_value", "title"], ascending=[False, True], na_position="last")
-            elif sort_by == "Rating (desc)":
+            elif sort_by == "Rating (desc)" and "rating" in df.columns:
                 df = df.sort_values(by=["rating", "title"], ascending=[False, True], na_position="last")
 
-            # Pretty display
-            show_cols = ["title", "price", "source", "rating", "link", "product_link"]
+            show_cols = [c for c in ["title", "price", "source", "merchant", "seller",
+                                    "rating", "link", "product_link", "_source"] if c in df.columns]
             st.caption(f"Found {len(df)} item(s)")
-            st.dataframe(df[show_cols], use_container_width=True, height=480)
+            st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, height=480)
 
-            # Optional: expandable cards
             with st.expander("Preview top 5"):
                 for _, row in df.head(5).iterrows():
+                    title = row.get("title", "")
+                    price = row.get("price", "")
+                    src   = row.get("source") or row.get("merchant") or row.get("seller") or row.get("_source", "")
+                    rating = row.get("rating", "—")
+                    link = row.get("link") or row.get("product_link")
                     st.markdown(
-                        f"**{row['title']}**  \n"
-                        f"Price: {row['price']}  |  Source: {row['source']}  |  Rating: {row.get('rating','—')}  \n"
-                        f"[Product Page]({row['link']}) · [Google Shopping]({row['product_link']})"
+                        f"**{title}**  \n"
+                        f"Price: {price}  |  Source: {src}  |  Rating: {rating}  \n"
+                        f"{('[Open](' + str(link) + ')') if link else ''}"
                     )
         except Exception as e:
             st.error(f"Error: {e}")

@@ -50,6 +50,60 @@ def google_shopping_search_raw(
     search = GoogleSearch(params)
     return search.get_dict()
 
+# def google_shopping_search(
+#     q: str,
+#     hl: str = "en",
+#     gl: str = "us",
+#     num: int = 20,
+#     location: Optional[str] = None,
+# ) -> List[dict]:
+#     """
+#     High-level wrapper that normalizes results into a consistent schema.
+
+#     Output schema (list of dicts):
+#     - title: str
+#     - price: Optional[float]   # lower-bound numeric price
+#     - price_str: Optional[str] # original price text
+#     - source: Optional[str]    # vendor/site
+#     - rating: Optional[float]
+#     - link: Optional[str]      # listing link
+#     - product_link: Optional[str] # product details on Google
+#     - currency_guess: Optional[str] # best-effort, from symbol if present
+#     """
+#     raw = google_shopping_search_raw(q=q, hl=hl, gl=gl, num=num, location=location)
+
+#     # Quick error visibility
+#     if "error" in raw:
+#         # Raise so the tool chain surfaces the failure (easier to debug in dev)
+#         raise RuntimeError(f"SerpApi error: {raw['error']}")
+
+#     out: List[dict] = []
+#     for r in raw.get("shopping_results", []) or []:
+#         price_str = r.get("price")
+#         price = _to_float(price_str)
+
+#         # Very light currency guess based on symbol
+#         currency_guess = None
+#         if isinstance(price_str, str):
+#             if "$" in price_str:
+#                 currency_guess = "USD"
+#             elif "€" in price_str:
+#                 currency_guess = "EUR"
+#             elif "£" in price_str:
+#                 currency_guess = "GBP"
+
+#         out.append({
+#             "title": r.get("title"),
+#             "price": price,
+#             "price_str": price_str,
+#             "source": r.get("source"),
+#             "rating": r.get("rating"),
+#             "link": r.get("link"),
+#             "product_link": r.get("product_link"),
+#             "currency_guess": currency_guess,
+#         })
+#     return out
+
 def google_shopping_search(
     q: str,
     hl: str = "en",
@@ -57,49 +111,60 @@ def google_shopping_search(
     num: int = 20,
     location: Optional[str] = None,
 ) -> List[dict]:
-    """
-    High-level wrapper that normalizes results into a consistent schema.
-
-    Output schema (list of dicts):
-    - title: str
-    - price: Optional[float]   # lower-bound numeric price
-    - price_str: Optional[str] # original price text
-    - source: Optional[str]    # vendor/site
-    - rating: Optional[float]
-    - link: Optional[str]      # listing link
-    - product_link: Optional[str] # product details on Google
-    - currency_guess: Optional[str] # best-effort, from symbol if present
-    """
     raw = google_shopping_search_raw(q=q, hl=hl, gl=gl, num=num, location=location)
 
     # Quick error visibility
     if "error" in raw:
-        # Raise so the tool chain surfaces the failure (easier to debug in dev)
         raise RuntimeError(f"SerpApi error: {raw['error']}")
 
     out: List[dict] = []
     for r in raw.get("shopping_results", []) or []:
         price_str = r.get("price")
         price = _to_float(price_str)
+        seller = r.get("seller") or r.get("source") or None
 
-        # Very light currency guess based on symbol
-        currency_guess = None
-        if isinstance(price_str, str):
-            if "$" in price_str:
-                currency_guess = "USD"
-            elif "€" in price_str:
-                currency_guess = "EUR"
-            elif "£" in price_str:
-                currency_guess = "GBP"
+        # Try to get a valid link
+        link = r.get("link") or r.get("product_link") or None
+
+        # If both are missing, check for other possible keys
+        if not link:
+            # Sometimes, SerpApi returns "product_id" or other identifiers
+            product_id = r.get("product_id")
+            if product_id:
+                link = f"https://www.google.com/shopping/product/{product_id}"
+
+        # Title fallback
+        title = r.get("title") or r.get("name") or "No title"
 
         out.append({
-            "title": r.get("title"),
+            "title": title,
             "price": price,
             "price_str": price_str,
-            "source": r.get("source"),
+            "seller": seller,
+            "link": link,
             "rating": r.get("rating"),
-            "link": r.get("link"),
-            "product_link": r.get("product_link"),
-            "currency_guess": currency_guess,
+            "currency_guess": None,
         })
+    # for r in raw.get("shopping_results", []) or []:
+    #     price_str = r.get("price")
+    #     price = _to_float(price_str)
+
+    #     # Try to extract seller/site info
+    #     seller = r.get("seller") or r.get("source") or None
+
+    #     # Try to extract link info (fall back if needed)
+    #     link = r.get("link") or r.get("product_link") or None
+
+    #     # Title fallback
+    #     title = r.get("title") or r.get("name") or "No title"
+
+    #     out.append({
+    #         "title": title,
+    #         "price": price,
+    #         "price_str": price_str,
+    #         "seller": seller,
+    #         "link": link,
+    #         "rating": r.get("rating"),
+    #         "currency_guess": None,  # Add logic if you want
+    #     })
     return out

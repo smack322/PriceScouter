@@ -1,6 +1,6 @@
 from typing import List, Optional
 from langchain_core.tools import tool
-from serp_tools import google_shopping_search
+from agents.serp_tools import google_shopping_search
 
 @tool
 def google_shopping(q: str, num: int = 20, location: Optional[str] = None) -> List[dict]:

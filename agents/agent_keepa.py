@@ -2,7 +2,7 @@
 from typing import List, Optional
 from langchain_core.tools import tool
 
-from keepa_tools import search_products
+from agents.keepa_tools import search_products
 
 @tool
 def keepa_search(keyword: str, domain: str = "US", max_results: int = 10) -> List[dict]:
