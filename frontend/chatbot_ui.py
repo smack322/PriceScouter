@@ -1,6 +1,7 @@
 # app.py
-# Streamlit mock UI for product search with optional SerpApi integration
+# Streamlit UI for product search with optional SerpApi + Keepa + eBay agents
 # pip install streamlit google-search-results pandas python-dotenv
+
 import sys
 import os
 import time
@@ -8,11 +9,16 @@ import pandas as pd
 import asyncio
 import streamlit as st
 from dotenv import load_dotenv
+
+# Ensure package imports from project root
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# Agents (these should expose .ainvoke({...}) that return list[dict])
 from agents.client import run_agents
 from agents.agent_keepa import keepa_search
 from agents.agent_ebay import ebay_search
 
+# Optional SerpApi import
 try:
     from serpapi import GoogleSearch
     SERPAPI_AVAILABLE = True
@@ -25,11 +31,14 @@ import re
 
 _MAX_LEN = 256
 
+# ----------------------------
+# Input sanitization helpers
+# ----------------------------
 def _collapse_spaces(s: str) -> str:
     return " ".join(s.split())
 
 def _strip_emoji_ascii_only(s: str) -> str:
-    # Simple: remove non-ASCII (which strips 🍎)
+    # Simple: remove non-ASCII (which strips 🍎 and others)
     return "".join(ch for ch in s if ord(ch) < 128)
 
 def _remove_dangerous_tokens(s: str) -> str:
@@ -44,9 +53,11 @@ def _remove_dangerous_tokens(s: str) -> str:
 def _looks_dangerous(original: str) -> bool:
     low = original.lower()
     return (
-        "<script" in low or
-        re.search(r"\b(or)\b\s*1\s*=\s*1", low) is not None or
-        "--" in original or "'" in original or ";" in original
+        "<script" in low
+        or re.search(r"\b(or)\b\s*1\s*=\s*1", low) is not None
+        or "--" in original
+        or "'" in original
+        or ";" in original
     )
 
 def sanitize_input_fn(user_input) -> dict:
@@ -105,13 +116,14 @@ def sanitize_input_fn(user_input) -> dict:
         "forwarded": True,
     }
 
-# keep a thin wrapper if other code imports sanitize_input, but make sure tests use sanitize_input_fn
+# keep a thin wrapper if other code imports sanitize_input
 def sanitize_input(s: str) -> str:
-    # your actual logic here
     return s.strip()
-st.set_page_config(page_title="PriceScouter – Mock Search", page_icon="🛒", layout="wide")
 
-sanitize_input_fn = sanitize_input
+# ----------------------------
+# Streamlit page config
+# ----------------------------
+st.set_page_config(page_title="PriceScouter – Product Search", page_icon="🛒", layout="wide")
 
 # ----------------------------
 # Sidebar controls / settings
@@ -139,17 +151,19 @@ location = st.sidebar.text_input(
 
 max_results = st.sidebar.slider("Max results", 5, 50, 20, step=5)
 
+# Keep a persistent ZIP for eBay / All provider
+zip_ebay = st.sidebar.text_input("Ship to ZIP (eBay/All)", value="19406")
+
 st.sidebar.caption(
     "Tip: Leave provider as **Mock data** while designing the UI. "
-    "Switch to SerpApi when you're ready to test live calls."
+    "Switch to SerpApi/Keepa/eBay when you're ready to test live calls."
 )
 
 # ----------------------------
-# Helpers
+# Provider helpers
 # ----------------------------
 @st.cache_data(show_spinner=False)
 def mock_search(q: str, n: int = 20) -> pd.DataFrame:
-    # Simple, deterministic mock dataset
     rows = []
     for i in range(1, n + 1):
         rows.append(
@@ -198,7 +212,7 @@ def serpapi_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
 
 @st.cache_data(show_spinner=False)
 def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
-    # Calls the keepa_search agent
+    # Calls the keepa_search agent (async tool)
     items = asyncio.run(
         keepa_search.ainvoke({
             "keyword": q,
@@ -207,10 +221,30 @@ def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
         })
     )
     df = pd.DataFrame(items) if items else pd.DataFrame([])
-    if "price_new" in df.columns and "price" not in df.columns:
-        df["price"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+
+    # --- Normalize/augment display fields for Keepa results ---
+
+    # Price display: prefer 'price_now', fallback to 'price_new' if needed
+    if "price" not in df.columns:
+        if "price_now" in df.columns:
+            df["price"] = df["price_now"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+        elif "price_new" in df.columns:
+            df["price"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+
+    # Link fallback from ASIN
     if "link" not in df.columns and "asin" in df.columns:
         df["link"] = df["asin"].apply(lambda asin: f"https://www.amazon.com/dp/{asin}" if pd.notnull(asin) else None)
+
+    # Human-friendly badges
+    if "deal_vs_avg90_pct" in df.columns:
+        df["deal_badge"] = df["deal_vs_avg90_pct"].apply(
+            lambda p: f"-{p:.0f}% vs 90d avg" if pd.notnull(p) and p > 0 else None
+        )
+    if "amazon_competing" in df.columns:
+        df["compete"] = df["amazon_competing"].apply(lambda b: "Amazon competing" if bool(b) else "3P only")
+    if "buybox_is_fba" in df.columns:
+        df["fulfillment"] = df["buybox_is_fba"].apply(lambda b: "FBA" if bool(b) else "MFN")
+
     return df
 
 @st.cache_data(show_spinner=False)
@@ -233,32 +267,55 @@ def ebay_agent_search(q: str, zip_code: str, n: int = 20) -> pd.DataFrame:
         df["link"] = df["url"]
     return df
 
+# ----------------------------
+# Normalization
+# ----------------------------
 def normalize_price_str_to_float(x):
     if x is None:
         return None
     if isinstance(x, (int, float)):
         return float(x)
-    # Now safe to call replace on x
-    import re
-    m = re.search(r"\d+(?:\.\d+)?", x.replace(",", ""))
+    m = re.search(r"\d+(?:\.\d+)?", str(x).replace(",", ""))
     return float(m.group()) if m else None
 
 # ----------------------------
 # Header / Search bar
 # ----------------------------
-st.title("🛒 PriceScouter – Product Search (Mock UI)")
+st.title("🛒 PriceScouter – Product Search")
 st.write("Type a query, choose a data source, and view normalized results.")
 
 with st.form("search_form"):
-    q = st.text_input("Search for a product", value="iphone 15 case", placeholder="e.g., 'wireless earbuds'")
+    q_raw = st.text_input("Search for a product", value="iphone 15 case", placeholder="e.g., 'wireless earbuds'")
+
+    # Sanitize but still allow submission
+    sani = sanitize_input_fn(q_raw)
+    q = sani["safe_input"] if sani["safe_input"] else q_raw
+
     col1, col2, col3 = st.columns([1, 1, 2])
     with col1:
-        sort_by = st.selectbox("Sort by", ["Best match", "Price (asc)", "Price (desc)", "Rating (desc)"])
+        sort_by = st.selectbox(
+            "Sort by",
+            [
+                "Best match",
+                "Price (asc)",
+                "Price (desc)",
+                "Rating (desc)",
+                # New Keepa-aware sorters (only apply when columns exist)
+                "Resellability (desc)",
+                "Sales rank (asc)",
+                "Deal vs 90d avg (desc)",
+            ],
+            help="Additional sorters activate when those columns exist."
+        )
     with col2:
         min_price = st.number_input("Min $", min_value=0.0, value=0.0, step=1.0)
     with col3:
         max_price = st.number_input("Max $", min_value=0.0, value=0.0, step=1.0, help="0 = no max")
     submitted = st.form_submit_button("Search", use_container_width=True)
+
+# User-facing sanitation messages
+if submitted and sani["error"]:
+    st.warning(sani["message"])
 
 # ----------------------------
 # Execute search
@@ -270,63 +327,98 @@ if submitted and q.strip():
         try:
             if provider == "Mock data":
                 df = mock_search(q, n=max_results)
+
             elif provider == "SerpApi – Google Shopping":
                 df = serpapi_search(q, api_key, location, n=max_results)
+
             elif provider == "Keepa - Amazon":
                 df = keepa_agent_search(q, n=max_results)
-            elif provider == "eBay":
-                zip_code = st.sidebar.text_input("Ship to ZIP", value="19382", key="zip_ebay")
-                df = ebay_agent_search(q, zip_code, n=max_results)
 
-            elif provider == "All":  # Agents (Keepa + Google + eBay)
-                # 🔽 This is the line you asked about — it goes right here:
+            elif provider == "eBay":
+                df = ebay_agent_search(q, zip_ebay, n=max_results)
+
+            elif provider == "All":  # Agents (Keepa + Google + eBay) orchestrated by your client agent
                 rows = asyncio.run(
                     run_agents(
                         q,
-                        zip_code=st.sidebar.text_input("Ship to ZIP", value="19406", key="zip_agents"),
-                        country="US",  # or expose a sidebar input like you do for SerpApi
+                        zip_code=zip_ebay,
+                        country="US",
                         max_price=(max_price or None),
                         top_n=max_results,
                     )
                 )
-                # Convert to DataFrame; coerce any odd types to builtins
+                # Convert to DataFrame; coerce odd types to builtins
                 import json
                 import numpy as np
+
                 def _to_builtin(o):
                     if isinstance(o, (np.integer,)): return int(o)
                     if isinstance(o, (np.floating,)): return float(o)
                     if isinstance(o, (np.bool_,)): return bool(o)
                     if isinstance(o, (np.ndarray,)): return o.tolist()
                     return o
+
                 rows = json.loads(json.dumps(rows, default=_to_builtin))
                 df = pd.DataFrame(rows) if rows else pd.DataFrame([])
 
-                # Normalize a 'price' string column for display parity with other providers
+                # Normalize some common fields for visual parity
                 if "total" in df.columns and "price" not in df.columns:
                     df["price"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
                 if "url" in df.columns and "link" not in df.columns:
                     df["link"] = df["url"]
 
-            # --- from here down, keep your existing normalization/sorting/display ---
-            df["price_value"] = df["price"].apply(normalize_price_str_to_float) if "price" in df.columns else None
+            # --- Sorting/Filtering/Display (provider-agnostic) ---
 
+            # Numeric price for filters/sorting if present
+            if "price" in df.columns:
+                df["price_value"] = df["price"].apply(normalize_price_str_to_float)
+            else:
+                df["price_value"] = None
+
+            # Filters
             if min_price > 0:
                 df = df[df["price_value"].fillna(10**9) >= min_price]
             if max_price > 0:
                 df = df[df["price_value"].fillna(0) <= max_price]
 
+            # Sorters
             if sort_by == "Price (asc)":
                 df = df.sort_values(by=["price_value", "title"], ascending=[True, True], na_position="last")
             elif sort_by == "Price (desc)":
                 df = df.sort_values(by=["price_value", "title"], ascending=[False, True], na_position="last")
             elif sort_by == "Rating (desc)" and "rating" in df.columns:
                 df = df.sort_values(by=["rating", "title"], ascending=[False, True], na_position="last")
+            elif sort_by == "Resellability (desc)" and "resellability_score" in df.columns:
+                df = df.sort_values(by=["resellability_score", "title"], ascending=[False, True], na_position="last")
+            elif sort_by == "Sales rank (asc)" and "sales_rank_now" in df.columns:
+                df = df.sort_values(by=["sales_rank_now", "title"], ascending=[True, True], na_position="last")
+            elif sort_by == "Deal vs 90d avg (desc)" and "deal_vs_avg90_pct" in df.columns:
+                df = df.sort_values(by=["deal_vs_avg90_pct", "title"], ascending=[False, True], na_position="last")
+            # else: Best match → leave incoming order
 
-            show_cols = [c for c in ["title", "price", "source", "merchant", "seller",
-                                    "rating", "link", "product_link", "_source"] if c in df.columns]
+            # Columns to show: base + Keepa-aware extras (only if present)
+            base_cols = ["title", "price", "source", "merchant", "seller",
+                        "rating", "link", "product_link", "_source"]
+
+            # Keepa-only extras (DO NOT repeat 'seller' here)
+            keepa_cols = [
+                "compete", "fulfillment",
+                "sales_rank_now", "offer_count_new_now", "offer_count_used_now",
+                "deal_badge", "resellability_score",
+            ]
+
+            # Build an ordered, de-duplicated list of existing cols
+            candidate_cols = base_cols + keepa_cols
+            seen, show_cols = set(), []
+            for c in candidate_cols:
+                if c in df.columns and c not in seen:
+                    show_cols.append(c)
+                    seen.add(c)
+
             st.caption(f"Found {len(df)} item(s)")
-            st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, height=480)
+            st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, height=520)
 
+            # Rich preview for quick scanning
             with st.expander("Preview top 5"):
                 for _, row in df.head(5).iterrows():
                     title = row.get("title", "")
@@ -334,18 +426,29 @@ if submitted and q.strip():
                     src   = row.get("source") or row.get("merchant") or row.get("seller") or row.get("_source", "")
                     rating = row.get("rating", "—")
                     link = row.get("link") or row.get("product_link")
+
+                    badges = []
+                    if row.get("deal_badge"): badges.append(str(row["deal_badge"]))
+                    if pd.notnull(row.get("sales_rank_now")): badges.append(f"Rank: {int(row['sales_rank_now'])}")
+                    if pd.notnull(row.get("offer_count_new_now")): badges.append(f"Sellers: {int(row['offer_count_new_now'])}")
+                    if pd.notnull(row.get("resellability_score")): badges.append(f"Score: {float(row['resellability_score']):.1f}")
+                    if row.get("compete"): badges.append(str(row["compete"]))
+                    if row.get("fulfillment"): badges.append(str(row["fulfillment"]))
+                    chips = "  ·  ".join(badges)
+
                     st.markdown(
                         f"**{title}**  \n"
                         f"Price: {price}  |  Source: {src}  |  Rating: {rating}  \n"
+                        f"{chips}  \n"
                         f"{('[Open](' + str(link) + ')') if link else ''}"
                     )
+
         except Exception as e:
             st.error(f"Error: {e}")
 else:
     st.write("👆 Enter a search term and click **Search** to see results. Use **Mock data** first to tweak the UI.")
 
 st.markdown("---")
-st.caption("This is a mock UI. For production, add more sources (eBay Browse, Walmart, etc.) and unify fields.")
+st.caption("For production, add more sources (eBay Browse, Walmart, etc.), unify schemas, and persist results to your DB.")
 
 __all__ = ["sanitize_input_fn", "normalize_price_str_to_float", "sanitize_input"]
-
