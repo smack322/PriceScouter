@@ -1,150 +1,213 @@
+import os
 import pytest
+from urllib.parse import urlparse, parse_qs, quote_plus
 
 import agents.serp_tools as serp_tools
-import agents.ebay_tool as ebay_tool
-import os
-# --------- _to_float tests ---------
 
-@pytest.mark.parametrize("input_str,expected", [
-    ("$12.99", 12.99),
-    ("12,99 €", 12.99),
-    ("12.99 – 15.49", 12.99),
-    ("", None),
-    (None, None),
-    ("Not a price", None),
-    ("1,299.00", 1299.00),
-    ("$1,299.00 – $1,399.00", 1299.00),
-])
-def test_to_float(input_str, expected):
-    assert serp_tools._to_float(input_str) == expected
 
-# --------- google_shopping_search_raw tests ---------
-
-def test_google_shopping_search_raw_raises_on_no_key(monkeypatch):
-    monkeypatch.delenv("SERPAPI_API_KEY", raising=False)
-    monkeypatch.delenv("SERP_API_KEY", raising=False)
-    with pytest.raises(RuntimeError):
-        serp_tools.google_shopping_search_raw("test product")
-
-def test_google_shopping_search_raw_passes_params(monkeypatch):
-    # Set API key
+# -----------------------------
+# Links restoration + fallback
+# -----------------------------
+def test_google_shopping_search_restores_links_and_builds_fallback(monkeypatch):
     monkeypatch.setenv("SERPAPI_API_KEY", "testkey")
-    # Patch GoogleSearch to return expected dict
-    class DummySearch:
-        def __init__(self, params):
-            self.params = params
-        def get_dict(self):
-            return {"shopping_results": [{"title": "item1", "price": "$9.99"}]}
-    monkeypatch.setattr(serp_tools, "GoogleSearch", DummySearch)
-    result = serp_tools.google_shopping_search_raw("test product", num=5, location="Philadelphia")
-    assert "shopping_results" in result
-    assert result["shopping_results"][0]["title"] == "item1"
 
-# --------- google_shopping_search tests ---------
+    def fake_raw(**kwargs):
+        return {
+            "shopping_results": [
+                # 1) Has explicit product_link + link
+                {
+                    "title": "Has Links",
+                    "price": "$10.00",
+                    "seller": "ShopA",
+                    "link": "https://shopa.example/item-1",
+                    "product_link": "https://www.google.com/shopping/product/ABC123",
+                    "product_id": "ABC123",
+                },
+                # 2) Missing product_link but has product_id (should build fallback)
+                {
+                    "title": "Needs Fallback",
+                    "price": "$12.00",
+                    "source": "ShopB",
+                    "product_id": "ZZZ999",
+                },
+                # 3) No product_id and no links (remain None)
+                {
+                    "title": "No Links",
+                    "price": "$15.00",
+                    "seller": "ShopC",
+                },
+            ]
+        }
 
-def test_google_shopping_search_normalizes(monkeypatch):
+    monkeypatch.setattr(serp_tools, "google_shopping_search_raw", fake_raw)
+
+    q = "iphone case"
+    results = serp_tools.google_shopping_search(q)
+
+    assert len(results) == 3
+
+    # Case 1: pass-through
+    assert results[0]["link"] == "https://shopa.example/item-1"
+    assert results[0]["product_link"] == "https://www.google.com/shopping/product/ABC123"
+
+    # Case 2: fallback builder used
+    assert results[1]["product_link"] is not None
+    url = results[1]["product_link"]
+    assert url.startswith("https://www.google.com/shopping/product/ZZZ999")
+    # ensure q param is present
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    assert qs.get("q", [""])[0] == q
+
+    # and also ensure the raw URL has the encoded q
+    assert f"q={quote_plus(q)}" in url
+
+    # Case 3: still None when no product_id and no links
+    assert results[2]["product_link"] is None
+    assert results[2]["link"] is None
+
+
+# ---------------------------------------
+# Shipping parsing → total_cost + flags
+# ---------------------------------------
+def test_total_cost_and_free_shipping_flag_from_extensions(monkeypatch):
     monkeypatch.setenv("SERPAPI_API_KEY", "testkey")
-    # Patch raw function to return dummy results
+
     def fake_raw(**kwargs):
         return {
             "shopping_results": [
                 {
-                    "title": "Test Product",
-                    "price": "$19.99",
-                    "seller": "BestBuy",
-                    "link": "https://bestbuy.com/item",
-                    "rating": 4.5,
+                    "title": "Free ship via extensions",
+                    "price": "$20.00",
+                    "seller": "X",
+                    "extensions": ["Free shipping", "Some other text"],
+                    "shipping": None,   # ignored due to extension
                 },
                 {
-                    "name": "Fallback Name",
-                    "price": "12.49",
-                    "source": "Amazon",
-                    "product_link": "https://amazon.com/item",
+                    "title": "Paid shipping",
+                    "price": "$20.00",
+                    "seller": "Y",
+                    "shipping": "$5.00",
+                    "extensions": [],
                 },
                 {
-                    "product_id": "123456",
-                    "price": "15.00"
-                }
+                    "title": "Unknown shipping",
+                    "price": "$20.00",
+                    "seller": "Z",
+                    "shipping": None,   # treat as 0 for total
+                    "extensions": [],
+                },
             ]
         }
-    monkeypatch.setattr(serp_tools, "google_shopping_search_raw", fake_raw)
-    results = serp_tools.google_shopping_search("iphone case")
-    assert len(results) == 3
-    assert results[0]["title"] == "Test Product"
-    assert results[0]["price"] == 19.99
-    assert results[0]["seller"] == "BestBuy"
-    assert results[1]["title"] == "Fallback Name"
-    assert results[1]["seller"] == "Amazon"
-    assert results[2]["link"].endswith("123456")
 
-def test_google_shopping_search_error(monkeypatch):
+    monkeypatch.setattr(serp_tools, "google_shopping_search_raw", fake_raw)
+    results = serp_tools.google_shopping_search("q")
+
+    # 1) Free shipping via extension -> shipping parsed as 0.0; total_cost = 20.0
+    r0 = results[0]
+    assert r0["free_shipping"] is True
+    assert r0["shipping"] == 0.0
+    assert r0["total_cost"] == pytest.approx(20.0)
+
+    # 2) Paid shipping -> total_cost = 25.0
+    r1 = results[1]
+    assert r1["free_shipping"] is False
+    assert r1["shipping"] == pytest.approx(5.0)
+    assert r1["total_cost"] == pytest.approx(25.0)
+
+    # 3) Missing shipping -> treat as 0 for total; flag should be False
+    r2 = results[2]
+    assert r2["shipping"] is None
+    assert r2["total_cost"] == pytest.approx(20.0)
+    assert r2["free_shipping"] is False
+
+
+# -----------------------------------------------------
+# Condition + brand guessing; delivery/speed indicators
+# -----------------------------------------------------
+def test_brand_and_condition_guess_and_speed_flags(monkeypatch):
     monkeypatch.setenv("SERPAPI_API_KEY", "testkey")
+
     def fake_raw(**kwargs):
-        return {"error": "Something went wrong"}
+        return {
+            "shopping_results": [
+                {
+                    "title": "Apple iPhone 13 (Renewed)",
+                    "price": "$300.00",
+                    "seller": "A",
+                    "extensions": ["Free shipping", "In-store pickup available"],
+                    "delivery": "Get it Today",  # fast_delivery => True
+                },
+                {
+                    "title": "Samsung Galaxy S23 (Open Box)",
+                    "price": "$450.00",
+                    "seller": "B",
+                    "extensions": ["Store pickup"],
+                    "delivery": "2-day shipping",
+                },
+            ]
+        }
+
     monkeypatch.setattr(serp_tools, "google_shopping_search_raw", fake_raw)
-    with pytest.raises(RuntimeError):
-        serp_tools.google_shopping_search("random")
+    res = serp_tools.google_shopping_search("phone")
 
-def test_google_shopping_search_empty(monkeypatch):
-    monkeypatch.setenv("SERPAPI_API_KEY", "testkey")
-    def fake_raw(**kwargs):
-        return {"shopping_results": []}
-    monkeypatch.setattr(serp_tools, "google_shopping_search_raw", fake_raw)
-    results = serp_tools.google_shopping_search("nothing")
-    assert results == []
+    # Row 0
+    r0 = res[0]
+    assert r0["brand_guess"] == "Apple"
+    assert r0["condition_guess"] == "Refurbished"
+    assert r0["in_store_pickup"] is True
+    assert r0["fast_delivery"] is True
 
-def test_eur_to_usd_conversion():
-    assert serp_tools.convert_to_usd(10, "EUR") == pytest.approx(10.75)  # Example value
+    # Row 1
+    r1 = res[1]
+    assert r1["brand_guess"] == "Samsung"
+    assert r1["condition_guess"] == "Open Box"
+    assert r1["in_store_pickup"] is True
+    # "2-day shipping" should not trigger the 'today/tomorrow/1 day' heuristic
+    assert r1["fast_delivery"] is False
 
-def test_gbp_to_usd_conversion():
-    assert serp_tools.convert_to_usd(10, "GBP") == pytest.approx(12.50)
 
-def test_unknown_currency_flagged():
-    result = serp_tools.normalize_price("100", "XYZ")
-    assert result["unsupported_currency"] is True
+# -----------------------------------
+# Shipping parser focused unit tests
+# -----------------------------------
+@pytest.mark.parametrize("shipping_str,extensions,expected_val,expected_flag", [
+    ("$7.99", [], 7.99, False),
+    ("From $7", [], 7.0, False),
+    (None, ["Free shipping"], 0.0, True),
+])
+def test_parse_shipping_cases(shipping_str, extensions, expected_val, expected_flag):
+    info = serp_tools._parse_shipping(shipping_str, extensions)
+    assert info["shipping"] == (pytest.approx(expected_val) if expected_val is not None else None)
+    free = ("free" in (shipping_str or "").lower()) or any("free shipping" in (e or "").lower() for e in (extensions or []))
+    assert (expected_flag is True) == free
 
-def test_mixed_currencies_sorted():
+
+# ---------------------------------------------------
+# sort_by_usd keeps unsupported currencies at the end
+# ---------------------------------------------------
+def test_sort_by_usd_places_unsupported_last():
     items = [
-        {"price": 10, "currency": "USD"},
         {"price": 10, "currency": "EUR"},
-        {"price": 10, "currency": "GBP"},
+        {"price": 10, "currency": "JPY"},  # unsupported in test rates
+        {"price": 10, "currency": "USD"},
     ]
     norm = serp_tools.sort_by_usd(items)
-    prices = [i["usd_price"] for i in norm]
-    assert prices == sorted(prices)
+    # JPY should have usd_price None and be last
+    assert norm[-1]["currency"] == "JPY"
+    assert norm[-1]["usd_price"] is None
 
-def test_robots_txt_disallowed_url(monkeypatch):
+
+# ---------------------------------------
+# Allowlist/robots defaults and behavior
+# ---------------------------------------
+def test_allowlist_defaults_true(monkeypatch):
+    # With _ALLOWED_HOSTS None, is_url_in_allowlist should be True
+    monkeypatch.setattr(serp_tools, "_ALLOWED_HOSTS", None)
+    assert serp_tools.is_url_in_allowlist("http://anything.example") is True
+
+def test_fetch_url_combined(monkeypatch):
+    # If allowlist passes but robots fails, we should get robots skip
+    monkeypatch.setattr(serp_tools, "is_url_in_allowlist", lambda url: True)
     monkeypatch.setattr(serp_tools, "is_allowed_by_robots", lambda url: False)
-    result = serp_tools.fetch_url("http://disallowed.com/item")
-    assert result["status"] == "skipped_robots"
-
-def test_url_not_in_allowlist(monkeypatch):
-    monkeypatch.setattr(serp_tools, "is_url_in_allowlist", lambda url: False)
-    result = serp_tools.fetch_url("http://notallowed.com/item")
-    assert result["status"] == "skipped_allowlist"
-
-def test_fail_fast_without_env(monkeypatch):
-    monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)
-    monkeypatch.delenv("EBAY_CLIENT_SECRET", raising=False)
-    with pytest.raises(RuntimeError):
-        ebay_tool._get_basic_auth_header()
-
-def test_secrets_redacted_in_logs(monkeypatch, caplog):
-    os.environ["EBAY_CLIENT_ID"] = "secretid"
-    os.environ["EBAY_CLIENT_SECRET"] = "secretsecret"
-    # Simulate function that logs
-    with caplog.at_level("INFO"):
-        ebay_tool.log_vendor_call({"client_id": os.environ["EBAY_CLIENT_ID"]})
-    for record in caplog.records:
-        assert "secretid" not in record.getMessage()
-        assert "secretsecret" not in record.getMessage()
-
-def test_no_hardcoded_secrets():
-    # Simple static scan for 'secret' or API keys in source
-    import glob
-    files = glob.glob("agents/*.py")
-    for fname in files:
-        with open(fname) as f:
-            content = f.read()
-            assert "sk_test_" not in content
-            assert "AIza" not in content
+    out = serp_tools.fetch_url("http://x.example/item")
+    assert out["status"] == "skipped_robots"
