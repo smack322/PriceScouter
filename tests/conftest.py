@@ -12,3 +12,5 @@ def _load_env_once():
         load_dotenv(env_path, override=False)
 
 _load_env_once()
+
+os.environ.setdefault("DISABLE_LLM", "1")
