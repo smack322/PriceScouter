@@ -1,8 +1,9 @@
 # keepa_tools.py
 import os
+import keepa
 from keepa import Keepa
 
-api = Keepa(os.environ.get("KEEPA_API_KEY"))  # set your key in env
+api = Keepa(os.environ.get("KEEPA_API_KEY"))
 
 def last_nonneg(seq):
     if seq is None:

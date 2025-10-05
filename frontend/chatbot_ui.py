@@ -21,7 +21,97 @@ except Exception:
 
 load_dotenv()
 
+import re
+
+_MAX_LEN = 256
+
+def _collapse_spaces(s: str) -> str:
+    return " ".join(s.split())
+
+def _strip_emoji_ascii_only(s: str) -> str:
+    # Simple: remove non-ASCII (which strips 🍎)
+    return "".join(ch for ch in s if ord(ch) < 128)
+
+def _remove_dangerous_tokens(s: str) -> str:
+    # strip <script>...</script> and any other tags
+    s = re.sub(r"(?is)<\s*script.*?>.*?<\s*/\s*script\s*>", " ", s)
+    s = re.sub(r"(?is)<[^>]+>", " ", s)
+    # neutralize classic SQL-ish bits
+    s = s.replace("--", " ").replace("'", " ").replace(";", " ")
+    s = re.sub(r"\bOR\b\s*1\s*=\s*1\b", " ", s, flags=re.IGNORECASE)
+    return _collapse_spaces(s)
+
+def _looks_dangerous(original: str) -> bool:
+    low = original.lower()
+    return (
+        "<script" in low or
+        re.search(r"\b(or)\b\s*1\s*=\s*1", low) is not None or
+        "--" in original or "'" in original or ";" in original
+    )
+
+def sanitize_input_fn(user_input) -> dict:
+    """
+    Returns:
+      {
+        "error": None | "INPUT_EMPTY" | "INPUT_TOO_LONG" | "DANGEROUS",
+        "message": str,
+        "safe_input": str,
+        "forwarded": bool
+      }
+    """
+    s = "" if user_input is None else str(user_input)
+
+    # empty
+    if not s.strip():
+        return {
+            "error": "INPUT_EMPTY",
+            "message": "User-facing message: Please enter a product or keyword.",
+            "safe_input": "",
+            "forwarded": False,
+        }
+
+    # base normalization
+    base = _collapse_spaces(s.lower())
+    no_emoji = _strip_emoji_ascii_only(base)
+    cleaned = _remove_dangerous_tokens(no_emoji)
+
+    # too long?
+    too_long = len(cleaned) > _MAX_LEN
+    if too_long:
+        cleaned = cleaned[:_MAX_LEN]
+
+    # dangerous?
+    if _looks_dangerous(s):
+        return {
+            "error": "DANGEROUS",
+            "message": "User-facing message: Your query contained unsafe content and was sanitized.",
+            "safe_input": cleaned,
+            "forwarded": False,
+        }
+
+    if too_long:
+        return {
+            "error": "INPUT_TOO_LONG",
+            "message": "User-facing message: Your query was long; it has been truncated.",
+            "safe_input": cleaned,
+            "forwarded": False,
+        }
+
+    # happy path
+    return {
+        "error": None,
+        "message": "",
+        "safe_input": cleaned,
+        "forwarded": True,
+    }
+
+# keep a thin wrapper if other code imports sanitize_input, but make sure tests use sanitize_input_fn
+def sanitize_input(s: str) -> str:
+    # your actual logic here
+    return s.strip()
 st.set_page_config(page_title="PriceScouter – Mock Search", page_icon="🛒", layout="wide")
+
+sanitize_input_fn = sanitize_input
 
 # ----------------------------
 # Sidebar controls / settings
@@ -256,4 +346,6 @@ else:
 
 st.markdown("---")
 st.caption("This is a mock UI. For production, add more sources (eBay Browse, Walmart, etc.) and unify fields.")
+
+__all__ = ["sanitize_input_fn", "normalize_price_str_to_float", "sanitize_input"]
 
