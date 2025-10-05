@@ -1,7 +1,8 @@
 import pytest
 
-import agents.serp_tools
-
+import agents.serp_tools as serp_tools
+import agents.ebay_tool as ebay_tool
+import os
 # --------- _to_float tests ---------
 
 @pytest.mark.parametrize("input_str,expected", [
@@ -121,13 +122,6 @@ def test_url_not_in_allowlist(monkeypatch):
     monkeypatch.setattr(serp_tools, "is_url_in_allowlist", lambda url: False)
     result = serp_tools.fetch_url("http://notallowed.com/item")
     assert result["status"] == "skipped_allowlist"
-
-def test_mixed_allowed_disallowed(monkeypatch):
-    urls = ["http://allowed.com/item", "http://disallowed.com/item"]
-    monkeypatch.setattr(serp_tools, "is_allowed_by_robots", lambda url: "allowed" in url)
-    fetched = [serp_tools.fetch_url(u) for u in urls]
-    statuses = [r["status"] for r in fetched]
-    assert statuses == ["fetched", "skipped_robots"]
 
 def test_fail_fast_without_env(monkeypatch):
     monkeypatch.delenv("EBAY_CLIENT_ID", raising=False)

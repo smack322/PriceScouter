@@ -6,6 +6,7 @@ from langchain_core.tools import tool
 # (make sure ebay_tool.py is on your PYTHONPATH)
 from agents.ebay_tool import search_ebay_cheapest_tool
 
+import logging
 @tool
 def ebay_search(
     keyword: str,
@@ -52,3 +53,44 @@ def ebay_search(
         items = filtered
 
     return items
+
+
+
+# … existing imports/code …
+
+_SENSITIVE_KEYS = {
+    "client_id",
+    "client_secret",
+    "authorization",
+    "token",
+    "access_token",
+    "refresh_token",
+    "api_key",
+}
+
+def _redact_payload(data):
+    """Return a deep-copied, redacted version of dict/list/scalars for safe logging."""
+    if isinstance(data, dict):
+        redacted = {}
+        for k, v in data.items():
+            if isinstance(k, str) and k.lower() in _SENSITIVE_KEYS:
+                redacted[k] = "[REDACTED]"
+            else:
+                redacted[k] = _redact_payload(v)
+        return redacted
+    elif isinstance(data, list):
+        return [_redact_payload(v) for v in data]
+    elif isinstance(data, str):
+        # Heuristic: strip long token-like strings
+        return "[REDACTED]" if len(data) >= 8 else data
+    else:
+        return data
+
+def log_vendor_call(payload, level=logging.INFO, logger=None):
+    """
+    Log a vendor call with secrets removed.
+    Tests call: log_vendor_call({"client_id": "secretid"})
+    """
+    logger = logger or logging.getLogger(__name__)
+    safe = _redact_payload(deepcopy(payload))
+    logger.log(level, "vendor_call %s", safe)

@@ -1,6 +1,6 @@
 import pytest
 import os
-import agents.ebay_tool
+import agents.ebay_tool as ebay_tool
 
 # ------------------- Input Schema ----------------------
 

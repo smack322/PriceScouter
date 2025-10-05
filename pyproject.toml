@@ -1,0 +1,12 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pricescouter"
+version = "0.0.1"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["pricescouter", "."]
+asyncio_mode = "auto"   # for pytest-asyncio (see §3)
