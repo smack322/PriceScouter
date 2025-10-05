@@ -3,6 +3,8 @@ import re
 from typing import List, Optional, Dict, Any
 from serpapi import GoogleSearch
 
+from urllib.parse import quote_plus
+
 PRICE_RE = re.compile(r"([0-9]+(?:[.,][0-9]{1,2})?)")
 
 def _to_float(s):
@@ -64,6 +66,149 @@ def _to_float(s):
     except ValueError:
         return None
 
+def _parse_shipping(shipping_str: Optional[str], extensions: Optional[List[str]]) -> Dict[str, Any]:
+    """
+    Return {'shipping_str', 'shipping'} where shipping is a float if parsable.
+    Treat any 'Free' shipping hints as 0.0.
+    """
+    s = shipping_str or ""
+    ext = extensions or []
+
+    # If explicitly free in either field
+    free_hint = ("free" in s.lower()) or any("free shipping" in e.lower() for e in ext)
+    if free_hint:
+        return {"shipping_str": shipping_str, "shipping": 0.0}
+
+    # Try to parse a number (e.g., '$5.99', 'Shipping $4', 'From $7')
+    val = _to_float(s) if s else None
+    return {"shipping_str": shipping_str, "shipping": val}
+
+def _first_ext_flag(extensions: Optional[List[str]], keyword: str) -> bool:
+    """
+    True if any extension contains keyword (case-insensitive).
+    """
+    if not extensions:
+        return False
+    kw = keyword.lower()
+    return any(kw in (e or "").lower() for e in extensions)
+
+def _guess_condition_from_title(title: str, extensions: Optional[List[str]]) -> Optional[str]:
+    """
+    Simple heuristic guess for item condition.
+    """
+    t = (title or "").lower()
+    exts = " ".join(extensions or []).lower()
+    hay = f"{t} {exts}"
+    if any(k in hay for k in ["refurb", "renewed", "reconditioned"]):
+        return "Refurbished"
+    if any(k in hay for k in ["used", "pre-owned", "preowned"]):
+        return "Used"
+    if any(k in hay for k in ["open box"]):
+        return "Open Box"
+    if any(k in hay for k in ["brand new", "new in box", "new"]):
+        return "New"
+    return None
+
+def _guess_brand_from_title(title: str) -> Optional[str]:
+    """
+    Low-effort brand guess: take the first token if it's alphabetic and >2 chars.
+    You can replace with a real brand model later without touching callers.
+    """
+    if not title:
+        return None
+    first = title.split()[0]
+    # avoid generic tokens like 'For', 'Case', etc.
+    if first.isalpha() and len(first) > 2 and first[0].isupper():
+        return first
+    return None
+
+def google_shopping_search(
+    q: str,
+    hl: str = "en",
+    gl: str = "us",
+    num: int = 20,
+    location: Optional[str] = None,
+) -> List[dict]:
+    raw = google_shopping_search_raw(q=q, hl=hl, gl=gl, num=num, location=location)
+
+    # Quick error visibility
+    if "error" in raw:
+        raise RuntimeError(f"SerpApi error: {raw['error']}")
+
+    out: List[dict] = []
+    for r in raw.get("shopping_results", []) or []:
+        price_str = r.get("price")
+        price = _to_float(price_str)
+
+        seller = r.get("seller") or r.get("source") or None
+        seller_domain = None
+        if isinstance(seller, str) and "." in seller:
+            seller_domain = seller.lower()
+
+        extensions = r.get("extensions") or []
+        delivery = r.get("delivery")
+        rating = r.get("rating")
+        reviews = r.get("reviews")
+        product_id = r.get("product_id")
+
+        # >>> RESTORED: raw links from SerpApi <<<
+        link = r.get("link")
+        product_link = r.get("product_link")
+        if not product_link and product_id:
+            # Conservative fallback builder (keeps old behavior “something clickable”)
+            product_link = (
+                f"https://www.google.com/shopping/product/{product_id}?q={quote_plus(q)}"
+            )
+
+        ship_info = _parse_shipping(r.get("shipping"), extensions)
+        shipping = ship_info["shipping"]
+        shipping_str = ship_info["shipping_str"]
+
+        title = r.get("title") or r.get("name") or "No title"
+        brand_guess = _guess_brand_from_title(title)
+        condition_guess = _guess_condition_from_title(title, extensions)
+
+        free_shipping = (shipping == 0.0) or _first_ext_flag(extensions, "free shipping")
+        in_store_pickup = _first_ext_flag(extensions, "in-store") or _first_ext_flag(extensions, "store pickup")
+        fast_delivery = _first_ext_flag(extensions, "today") or _first_ext_flag(extensions, "tomorrow") \
+                        or (isinstance(delivery, str) and any(k in delivery.lower() for k in ["today", "tomorrow", "1 day"]))
+
+        currency_guess = None
+
+        total_cost = price + (shipping or 0.0) if price is not None else None
+
+        out.append({
+            "title": title,
+            "price": price,
+            "price_str": price_str,
+
+            # vendor fields
+            "seller": seller,
+            "seller_domain": seller_domain,
+
+            # >>> RESTORED: links <<<
+            "link": link,
+            "product_link": product_link,
+
+            # meta & heuristics
+            "rating": rating,
+            "reviews_count": reviews,
+            "product_id": product_id,
+            "extensions": extensions,
+            "delivery": delivery,
+            "shipping_str": shipping_str,
+            "shipping": shipping,
+            "total_cost": total_cost,
+            "free_shipping": free_shipping,
+            "in_store_pickup": in_store_pickup,
+            "fast_delivery": fast_delivery,
+            "brand_guess": brand_guess,
+            "condition_guess": condition_guess,
+            "currency_guess": currency_guess,
+        })
+
+    return out
+
 def google_shopping_search_raw(
     q: str,
     hl: str = "en",
@@ -91,74 +236,7 @@ def google_shopping_search_raw(
 
     search = GoogleSearch(params)
     return search.get_dict()
-
-
-def google_shopping_search(
-    q: str,
-    hl: str = "en",
-    gl: str = "us",
-    num: int = 20,
-    location: Optional[str] = None,
-) -> List[dict]:
-    raw = google_shopping_search_raw(q=q, hl=hl, gl=gl, num=num, location=location)
-
-    # Quick error visibility
-    if "error" in raw:
-        raise RuntimeError(f"SerpApi error: {raw['error']}")
-
-    out: List[dict] = []
-    for r in raw.get("shopping_results", []) or []:
-        price_str = r.get("price")
-        price = _to_float(price_str)
-        seller = r.get("seller") or r.get("source") or None
-
-        # Try to get a valid link
-        link = r.get("link") or r.get("product_link") or None
-
-        # If both are missing, check for other possible keys
-        if not link:
-            # Sometimes, SerpApi returns "product_id" or other identifiers
-            product_id = r.get("product_id")
-            if product_id:
-                link = f"https://www.google.com/shopping/product/{product_id}"
-
-        # Title fallback
-        title = r.get("title") or r.get("name") or "No title"
-
-        out.append({
-            "title": title,
-            "price": price,
-            "price_str": price_str,
-            "seller": seller,
-            "link": link,
-            "rating": r.get("rating"),
-            "currency_guess": None,
-        })
-    # for r in raw.get("shopping_results", []) or []:
-    #     price_str = r.get("price")
-    #     price = _to_float(price_str)
-
-    #     # Try to extract seller/site info
-    #     seller = r.get("seller") or r.get("source") or None
-
-    #     # Try to extract link info (fall back if needed)
-    #     link = r.get("link") or r.get("product_link") or None
-
-    #     # Title fallback
-    #     title = r.get("title") or r.get("name") or "No title"
-
-    #     out.append({
-    #         "title": title,
-    #         "price": price,
-    #         "price_str": price_str,
-    #         "seller": seller,
-    #         "link": link,
-    #         "rating": r.get("rating"),
-    #         "currency_guess": None,  # Add logic if you want
-    #     })
-    return out
-
-    # Simple, test-friendly conversion rates (static on purpose for determinism)
+# Simple, test-friendly conversion rates (static on purpose for determinism)
 # Chosen to satisfy the pytest.approx() values in tests.
 _CURRENCY_TO_USD = {
     "USD": 1.00,

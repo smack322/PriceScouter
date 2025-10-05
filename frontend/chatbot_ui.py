@@ -1,4 +1,4 @@
-# app.py
+# streamlit_ui.py
 # Streamlit UI for product search with optional SerpApi + Keepa + eBay agents
 # pip install streamlit google-search-results pandas python-dotenv
 
@@ -18,16 +18,25 @@ from agents.client import run_agents
 from agents.agent_keepa import keepa_search
 from agents.agent_ebay import ebay_search
 
-# Optional SerpApi import
+# Optional SerpApi import (fallback path)
 try:
     from serpapi import GoogleSearch
     SERPAPI_AVAILABLE = True
 except Exception:
     SERPAPI_AVAILABLE = False
 
+# Optional serp_tools (preferred path)
+try:
+    from agents import serp_tools  # adjust import path if your serp_tools.py lives elsewhere
+    SERP_TOOLS_AVAILABLE = True
+except Exception:
+    SERP_TOOLS_AVAILABLE = False
+
 load_dotenv()
 
 import re
+import json
+import numpy as np
 
 _MAX_LEN = 256
 
@@ -178,12 +187,57 @@ def mock_search(q: str, n: int = 20) -> pd.DataFrame:
         )
     return pd.DataFrame(rows)
 
+def _to_builtin(o):
+    if isinstance(o, (np.integer,)): return int(o)
+    if isinstance(o, (np.floating,)): return float(o)
+    if isinstance(o, (np.bool_,)): return bool(o)
+    if isinstance(o, (np.ndarray,)): return o.tolist()
+    return o
+
 @st.cache_data(show_spinner=False)
 def serpapi_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
+    """
+    Preferred: use serp_tools.google_shopping_search() (new schema; no 'link').
+    Fallback: direct SerpApi request (legacy fields including 'link' when present).
+    """
+    # Preferred path — serp_tools (your new module)
+    if SERP_TOOLS_AVAILABLE:
+        # serp_tools reads key from env; set it temporarily if user provided one
+        if key:
+            # Respect either variable name used inside serp_tools
+            os.environ["SERPAPI_API_KEY"] = key
+            os.environ["SERP_API_KEY"] = key
+        raw_list = serp_tools.google_shopping_search(q=q, hl="en", gl="us", num=n, location=loc)
+        df = pd.DataFrame([json.loads(json.dumps(r, default=_to_builtin)) for r in (raw_list or [])])
+
+        if df.empty:
+            return df
+
+        # Normalize display price string expected by the rest of the UI
+        if "price" in df.columns and df["price"].dtype != object:
+            df["price_display"] = df["price"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else None)
+        else:
+            df["price_display"] = df.get("price")  # if already a string for some reason
+
+        # Maintain older column names for compatibility
+        if "seller" in df.columns and "source" not in df.columns:
+            df["source"] = df["seller"]
+
+        # Back-compat for link columns (serp_tools intentionally removed links)
+        if "link" not in df.columns:
+            df["link"] = None
+        if "product_link" not in df.columns:
+            df["product_link"] = None
+
+        # For uniform downstream handling
+        return df
+
+    # Fallback path — direct SerpApi
     if not SERPAPI_AVAILABLE:
-        raise RuntimeError("Package 'google-search-results' not installed.")
+        raise RuntimeError("Neither serp_tools nor 'google-search-results' is available.")
     if not key:
         raise ValueError("Missing SerpApi API key.")
+
     params = {
         "engine": "google_shopping",
         "q": q,
@@ -197,15 +251,17 @@ def serpapi_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
     search = GoogleSearch(params)
     results = search.get_dict()
     items = []
-    for r in results.get("shopping_results", []):
+    for r in results.get("shopping_results", []) or []:
         items.append(
             {
                 "title": r.get("title"),
-                "price": r.get("price"),
-                "source": r.get("source"),
+                "price_display": r.get("price"),     # keep UI-friendly string
+                "source": r.get("source") or r.get("seller"),
+                "seller": r.get("seller") or r.get("source"),
                 "rating": r.get("rating"),
                 "link": r.get("link"),
                 "product_link": r.get("product_link"),
+                "price_str": r.get("price"),
             }
         )
     return pd.DataFrame(items)
@@ -227,9 +283,15 @@ def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
     # Price display: prefer 'price_now', fallback to 'price_new' if needed
     if "price" not in df.columns:
         if "price_now" in df.columns:
-            df["price"] = df["price_now"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+            df["price_display"] = df["price_now"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
         elif "price_new" in df.columns:
-            df["price"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+            df["price_display"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+    else:
+        # If test data already uses 'price' numeric/string, make a display column too
+        if df["price"].dtype != object:
+            df["price_display"] = df["price"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+        else:
+            df["price_display"] = df["price"]
 
     # Link fallback from ASIN
     if "link" not in df.columns and "asin" in df.columns:
@@ -261,14 +323,14 @@ def ebay_agent_search(q: str, zip_code: str, n: int = 20) -> pd.DataFrame:
         })
     )
     df = pd.DataFrame(items) if items else pd.DataFrame([])
-    if "total" in df.columns and "price" not in df.columns:
-        df["price"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+    if "total" in df.columns and "price_display" not in df.columns:
+        df["price_display"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
     if "url" in df.columns and "link" not in df.columns:
         df["link"] = df["url"]
     return df
 
 # ----------------------------
-# Normalization
+# Normalization helpers
 # ----------------------------
 def normalize_price_str_to_float(x):
     if x is None:
@@ -299,8 +361,9 @@ with st.form("search_form"):
                 "Best match",
                 "Price (asc)",
                 "Price (desc)",
+                "Total cost (asc)",     # NEW: only active if column exists
                 "Rating (desc)",
-                # New Keepa-aware sorters (only apply when columns exist)
+                # Keepa-aware sorters (only apply when columns exist)
                 "Resellability (desc)",
                 "Sales rank (asc)",
                 "Deal vs 90d avg (desc)",
@@ -347,35 +410,30 @@ if submitted and q.strip():
                         top_n=max_results,
                     )
                 )
-                # Convert to DataFrame; coerce odd types to builtins
-                import json
-                import numpy as np
-
-                def _to_builtin(o):
-                    if isinstance(o, (np.integer,)): return int(o)
-                    if isinstance(o, (np.floating,)): return float(o)
-                    if isinstance(o, (np.bool_,)): return bool(o)
-                    if isinstance(o, (np.ndarray,)): return o.tolist()
-                    return o
-
-                rows = json.loads(json.dumps(rows, default=_to_builtin))
+                rows = json.loads(json.dumps(rows, default=lambda o: _to_builtin(o)))
                 df = pd.DataFrame(rows) if rows else pd.DataFrame([])
 
                 # Normalize some common fields for visual parity
-                if "total" in df.columns and "price" not in df.columns:
-                    df["price"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+                if "total" in df.columns and "price_display" not in df.columns:
+                    df["price_display"] = df["total"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
                 if "url" in df.columns and "link" not in df.columns:
                     df["link"] = df["url"]
 
             # --- Sorting/Filtering/Display (provider-agnostic) ---
 
-            # Numeric price for filters/sorting if present
-            if "price" in df.columns:
-                df["price_value"] = df["price"].apply(normalize_price_str_to_float)
+            # Numeric price for filters/sorting if present (prefer price_display; else price_str; else price)
+            price_source_col = "price_display" if "price_display" in df.columns else ("price_str" if "price_str" in df.columns else "price")
+            if price_source_col in df.columns:
+                df["price_value"] = df[price_source_col].apply(normalize_price_str_to_float)
             else:
                 df["price_value"] = None
 
-            # Filters
+            # If serp_tools provided total_cost (numeric), mirror a display string for consistency
+            if "total_cost" in df.columns and "total_cost_value" not in df.columns:
+                df["total_cost_value"] = pd.to_numeric(df["total_cost"], errors="coerce")
+                df["total_cost_display"] = df["total_cost_value"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
+
+            # Filters (by item price, not total)
             if min_price > 0:
                 df = df[df["price_value"].fillna(10**9) >= min_price]
             if max_price > 0:
@@ -386,6 +444,8 @@ if submitted and q.strip():
                 df = df.sort_values(by=["price_value", "title"], ascending=[True, True], na_position="last")
             elif sort_by == "Price (desc)":
                 df = df.sort_values(by=["price_value", "title"], ascending=[False, True], na_position="last")
+            elif sort_by == "Total cost (asc)" and "total_cost_value" in df.columns:
+                df = df.sort_values(by=["total_cost_value", "title"], ascending=[True, True], na_position="last")
             elif sort_by == "Rating (desc)" and "rating" in df.columns:
                 df = df.sort_values(by=["rating", "title"], ascending=[False, True], na_position="last")
             elif sort_by == "Resellability (desc)" and "resellability_score" in df.columns:
@@ -396,19 +456,29 @@ if submitted and q.strip():
                 df = df.sort_values(by=["deal_vs_avg90_pct", "title"], ascending=[False, True], na_position="last")
             # else: Best match → leave incoming order
 
-            # Columns to show: base + Keepa-aware extras (only if present)
-            base_cols = ["title", "price", "source", "merchant", "seller",
-                        "rating", "link", "product_link", "_source"]
-
-            # Keepa-only extras (DO NOT repeat 'seller' here)
+            # Columns to show: base + Keepa-aware + serp_tools-aware extras (only if present)
+            base_cols = [
+                "title",
+                "price_display", "price_str",
+                "source", "merchant", "seller", "seller_domain",
+                "rating", "reviews_count",
+                "link", "product_link", "_source"
+            ]
             keepa_cols = [
                 "compete", "fulfillment",
                 "sales_rank_now", "offer_count_new_now", "offer_count_used_now",
                 "deal_badge", "resellability_score",
             ]
+            serp_cols = [
+                "shipping_str", "shipping",
+                "total_cost_display", "total_cost",
+                "free_shipping", "in_store_pickup", "fast_delivery",
+                "brand_guess", "condition_guess",
+                "product_id", "currency_guess",
+                "extensions", "delivery",
+            ]
 
-            # Build an ordered, de-duplicated list of existing cols
-            candidate_cols = base_cols + keepa_cols
+            candidate_cols = base_cols + keepa_cols + serp_cols
             seen, show_cols = set(), []
             for c in candidate_cols:
                 if c in df.columns and c not in seen:
@@ -422,7 +492,7 @@ if submitted and q.strip():
             with st.expander("Preview top 5"):
                 for _, row in df.head(5).iterrows():
                     title = row.get("title", "")
-                    price = row.get("price", "")
+                    price = row.get("price_display") or row.get("price_str") or row.get("price", "")
                     src   = row.get("source") or row.get("merchant") or row.get("seller") or row.get("_source", "")
                     rating = row.get("rating", "—")
                     link = row.get("link") or row.get("product_link")
@@ -434,6 +504,10 @@ if submitted and q.strip():
                     if pd.notnull(row.get("resellability_score")): badges.append(f"Score: {float(row['resellability_score']):.1f}")
                     if row.get("compete"): badges.append(str(row["compete"]))
                     if row.get("fulfillment"): badges.append(str(row["fulfillment"]))
+                    if row.get("free_shipping"): badges.append("Free ship")
+                    if row.get("in_store_pickup"): badges.append("Store pickup")
+                    if row.get("fast_delivery"): badges.append("Fast delivery")
+                    if row.get("total_cost_display"): badges.append(f"Total: {row['total_cost_display']}")
                     chips = "  ·  ".join(badges)
 
                     st.markdown(
