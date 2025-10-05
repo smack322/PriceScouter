@@ -46,6 +46,10 @@ jobs:
         env:
           # Add any API keys/secrets you need for tests here
           KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
         run: |
           mkdir -p reports
           pytest -q \
