@@ -51,6 +51,7 @@ jobs:
     # only run on trusted pushes, not on PRs from forks
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    environment: PriceScouter
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
