@@ -9,23 +9,14 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  test:
+  unit:
     runs-on: ubuntu-latest
-
-    strategy:
-      matrix:
-        python-version: ['3.11']
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: '3.11'
           cache: 'pip'
-
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -38,27 +29,62 @@ jobs:
             pip install ".[test]" || true
           fi
           python -m pip install pytest pytest-cov
-
-      - name: Run tests and generate reports
+      - name: Run unit tests (mock LLMs)
         env:
           PYTHONPATH: ${{ github.workspace }}
-          DISABLE_LLM: "1"
-          KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
-          EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
-          EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+          DISABLE_LLM: "1"                    # force mocks/no-network
         run: |
           mkdir -p reports
           pytest -q \
-            -k "not test_extract_params_parses_query" \
+            -k "not requires_openai" \
             --maxfail=1 --disable-warnings \
             --junitxml=reports/junit.xml \
             --cov=. --cov-report=xml:reports/coverage.xml
-
       - name: Upload reports
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: test-reports
+          name: unit-reports
+          path: reports/
+
+  live-integration:
+    # only run on trusted pushes, not on PRs from forks
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      SERPAPI_API_KEY: ${{ secrets.SERPAPI_API_KEY }}
+      KEEPA_API_KEY: ${{ secrets.KEEPA_API_KEY }}
+      EBAY_CLIENT_ID: ${{ secrets.EBAY_CLIENT_ID }}
+      EBAY_CLIENT_SECRET: ${{ secrets.EBAY_CLIENT_SECRET }}
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          if [ -f requirements-dev.txt ]; then
+            pip install -r requirements-dev.txt
+          elif [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+          if [ -f pyproject.toml ] || [ -f setup.cfg ] || [ -f setup.py ]; then
+            pip install ".[test]" || true
+          fi
+          python -m pip install pytest pytest-cov
+      - name: Run live tests (marked)
+        run: |
+          mkdir -p reports
+          pytest -q -m requires_openai \
+            --maxfail=1 --disable-warnings \
+            --junitxml=reports/junit.xml
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-reports
           path: reports/
