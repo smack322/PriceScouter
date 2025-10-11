@@ -32,7 +32,8 @@ jobs:
       - name: Run unit tests (mock LLMs)
         env:
           PYTHONPATH: ${{ github.workspace }}
-          DISABLE_LLM: "1"                    # force mocks/no-network
+          DISABLE_LLM: "1"
+          KEEPA_API_KEY: "dummy"                   # force mocks/no-network
         run: |
           mkdir -p reports
           pytest -q \
