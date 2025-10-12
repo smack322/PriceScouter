@@ -32,7 +32,7 @@ import numpy as np
 
 import time
 import uuid
-from backend.local_db.db import init_db, log_search_event
+from backend.local_db.db import init_db, log_search_event, save_product_results
 
 init_db()
 
@@ -144,7 +144,7 @@ async def call_keepa(state: State):
     # status if any row carries an error
     dt = int((time.time() - t0) * 1000)
     status = "error" if any("_error" in r for r in rows) else "success"
-    log_search_event(
+    search_id = log_search_event(
         agent="keepa",
         query=p["query"],
         zip_code=p.get("zip_code"),
@@ -153,6 +153,7 @@ async def call_keepa(state: State):
         duration_ms=dt,
         results=rows
     )
+    save_product_results(search_id, rows)
     return {"fanout": {"keepa": rows}}
 
 # async def call_serp(state: State):
@@ -177,7 +178,7 @@ async def call_serp(state: State):
     )
     dt = int((time.time() - t0) * 1000)
     status = "error" if any("_error" in r for r in rows) else "success"
-    log_search_event(
+    search_id = log_search_event(
         agent="serp",
         query=p["query"],
         zip_code=p.get("zip_code"),
@@ -186,6 +187,7 @@ async def call_serp(state: State):
         duration_ms=dt,
         results=rows
     )
+    save_product_results(search_id, rows)
     return {"fanout": {"serp": rows}}
 
 async def call_ebay(state: State):
@@ -204,7 +206,7 @@ async def call_ebay(state: State):
     )
     dt = int((time.time() - t0) * 1000)
     status = "error" if any("_error" in r for r in rows) else "success"
-    log_search_event(
+    search_id = log_search_event(
         agent="ebay",
         query=p["query"],
         zip_code=p.get("zip_code"),
@@ -213,6 +215,7 @@ async def call_ebay(state: State):
         duration_ms=dt,
         results=rows
     )
+    save_product_results(search_id, rows)
     return {"fanout": {"ebay": rows}}
 
 
@@ -257,6 +260,17 @@ def aggregate(state: State):
         all_rows = [r for r in all_rows if total_cost(r) <= float(max_price)]
 
     all_rows.sort(key=total_cost)
+    # log the merged/filtered set and store them too
+    search_id = log_search_event(
+        agent="aggregate",
+        query=p["query"],
+        zip_code=p.get("zip_code"),
+        country=p.get("country"),
+        status="success",
+        results=all_rows[:50],      # sample
+        full_payload=all_rows,      # complete merged list
+    )
+    save_product_results(search_id, all_rows)
     return {"results": all_rows}
 
 
