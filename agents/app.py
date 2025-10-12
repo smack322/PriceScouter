@@ -30,6 +30,12 @@ from decimal import Decimal
 from datetime import date, datetime
 import numpy as np
 
+import time
+import uuid
+from backend.local_db.db import init_db, log_search_event
+
+init_db()
+
 def _to_builtin(o):
     """Coerce common non-JSON-native types to JSON-serializable builtins."""
     # numpy / pandas scalars & arrays
@@ -130,9 +136,22 @@ async def _safe_ainvoke(tool, kwargs: Dict[str, Any]) -> List[dict]:
 
 async def call_keepa(state: State):
     p = state["parsed"]
+    t0 = time.time()
     rows = await _safe_ainvoke(
         keepa_search,
         {"keyword": p["query"], "domain": p.get("country", "US"), "max_results": 10},
+    )
+    # status if any row carries an error
+    dt = int((time.time() - t0) * 1000)
+    status = "error" if any("_error" in r for r in rows) else "success"
+    log_search_event(
+        agent="keepa",
+        query=p["query"],
+        zip_code=p.get("zip_code"),
+        country=p.get("country"),
+        status=status,
+        duration_ms=dt,
+        results=rows
     )
     return {"fanout": {"keepa": rows}}
 
@@ -146,6 +165,7 @@ async def call_keepa(state: State):
 
 async def call_serp(state: State):
     p = state["parsed"]
+    t0 = time.time()
     rows = await _safe_ainvoke(
         google_shopping,
         {
@@ -153,11 +173,24 @@ async def call_serp(state: State):
             "num": 10,
             "location": p.get("zip_code") or p.get("country", "US"),  # or more relevant location string
         },
+        
+    )
+    dt = int((time.time() - t0) * 1000)
+    status = "error" if any("_error" in r for r in rows) else "success"
+    log_search_event(
+        agent="serp",
+        query=p["query"],
+        zip_code=p.get("zip_code"),
+        country=p.get("country"),
+        status=status,
+        duration_ms=dt,
+        results=rows
     )
     return {"fanout": {"serp": rows}}
 
 async def call_ebay(state: State):
     p = state["parsed"]
+    t0 = time.time()
     rows = await _safe_ainvoke(
         ebay_search,
         {
@@ -168,6 +201,17 @@ async def call_ebay(state: State):
             "max_results": 10,
             "fixed_price_only": False,
         },
+    )
+    dt = int((time.time() - t0) * 1000)
+    status = "error" if any("_error" in r for r in rows) else "success"
+    log_search_event(
+        agent="ebay",
+        query=p["query"],
+        zip_code=p.get("zip_code"),
+        country=p.get("country"),
+        status=status,
+        duration_ms=dt,
+        results=rows
     )
     return {"fanout": {"ebay": rows}}
 
@@ -241,6 +285,7 @@ def respond(state: State):
     return {"messages": [msg]}
 
 
+SESSION_ID = uuid.uuid4().hex[:12]
 # --------------------------- Build the graph ------------------------------- #
 graph = StateGraph(State)
 
