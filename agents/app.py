@@ -34,6 +34,24 @@ import time
 import uuid
 from backend.local_db.db import init_db, log_search_event, save_product_results
 
+import os
+import json
+
+USE_LLM = os.getenv("DISABLE_LLM", "").lower() not in {"1", "true", "yes"}
+
+if USE_LLM:
+    from langchain_openai import ChatOpenAI
+    extract_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+else:
+    # Hermetic fake for tests/CI
+    class _FakeLLM:
+        def invoke(self, _msgs):
+            # Mirror your expected schema for the "bad JSON" path
+            class _Resp:
+                content = json.dumps({"query": "fallback", "vendor": None, "limit": None})
+            return _Resp()
+    extract_llm = _FakeLLM()
+
 init_db()
 
 def _to_builtin(o):
