@@ -37,20 +37,48 @@ from backend.local_db.db import init_db, log_search_event, save_product_results
 import os
 import json
 
-USE_LLM = os.getenv("DISABLE_LLM", "").lower() not in {"1", "true", "yes"}
+def _llm_enabled() -> bool:
+    # Read at call-time (not import-time) so CI env is honored
+    return os.getenv("DISABLE_LLM", "").lower() not in {"1", "true", "yes"}
 
-if USE_LLM:
-    from langchain_openai import ChatOpenAI
-    extract_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
-else:
-    # Hermetic fake for tests/CI
-    class _FakeLLM:
-        def invoke(self, _msgs):
-            # Mirror your expected schema for the "bad JSON" path
-            class _Resp:
-                content = json.dumps({"query": "fallback", "vendor": None, "limit": None})
-            return _Resp()
-    extract_llm = _FakeLLM()
+# Lazy holder; only build when enabled
+_extract_llm = None
+
+def _get_extract_llm():
+    global _extract_llm
+    if _extract_llm is None:
+        # Only construct if enabled
+        if _llm_enabled():
+            from langchain_openai import ChatOpenAI
+            _extract_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+        else:
+            class _FakeLLM:
+                def invoke(self, _msgs):
+                    class _Resp:
+                        content = json.dumps({"query": "fallback", "vendor": None, "limit": None})
+                    return _Resp()
+            _extract_llm = _FakeLLM()
+    return _extract_llm
+
+def extract_params(state):
+    """
+    Your existing docstring…
+    """
+    # FAST PATH when LLM is disabled: avoid any network calls
+    if not _llm_enabled():
+        # emulate your “bad JSON -> fallback” path deterministically
+        msgs = state.get("messages") or []
+        text = getattr(msgs[-1], "content", None) if msgs else None
+        text = text or ""
+        return {"query": text, "vendor": None, "limit": None}
+
+    # LLM path
+    extract_llm = _get_extract_llm()
+    msg = extract_llm.invoke([
+        {"role": "system", "content": "Extract fields as JSON only."},
+        {"role": "user", "content": f"{state['messages'][-1].content}\n\nReturn only JSON."}
+    ])
+    return json.loads(msg.content)
 
 init_db()
 
