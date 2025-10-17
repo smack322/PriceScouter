@@ -229,7 +229,6 @@ def serpapi_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
         if "product_link" not in df.columns:
             df["product_link"] = None
 
-        # For uniform downstream handling
         return df
 
     # Fallback path — direct SerpApi
@@ -282,7 +281,6 @@ def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
         return df
 
     # --- Preserve agent-provided display string if present ---
-    # Prefer 'display_price' coming from keepa_tools; mirror to 'price_display' for UI
     if "price_display" not in df.columns and "display_price" in df.columns:
         df["price_display"] = df["display_price"]
 
@@ -293,7 +291,6 @@ def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
         elif "price_new" in df.columns and df["price_new"].notna().any():
             df["price_display"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
         else:
-            # Nothing usable—create the column so downstream code has it
             df["price_display"] = None
 
     # Link fallback from ASIN
@@ -389,8 +386,9 @@ if submitted and sani["error"]:
 if submitted and q.strip():
     st.info(f"Searching **{provider}** for: _{q}_")
     with st.spinner("Fetching results..."):
-        time.sleep(0.2)  # tiny delay so spinner shows
+        time.sleep(0.2)
         try:
+            # ---- Provider branches ----
             if provider == "Mock data":
                 df = mock_search(q, n=max_results)
 
@@ -422,16 +420,27 @@ if submitted and q.strip():
                 if "url" in df.columns and "link" not in df.columns:
                     df["link"] = df["url"]
 
-            # --- Sorting/Filtering/Display (provider-agnostic) ---
+            # ---- Provider-agnostic normalization (RUNS FOR ALL PROVIDERS) ----
+            # 1) Fix nullable booleans from Google/Serp so truthiness works
+            for c in ["free_shipping", "in_store_pickup", "fast_delivery"]:
+                if c in df.columns:
+                    df[c] = pd.Series(df[c]).astype("boolean").fillna(False).astype(bool)
 
-            # Numeric price for filters/sorting if present (prefer price_display; else price_str; else price)
+            # 2) Ensure link fields are plain strings or None (avoid <NA>)
+            for c in ["link", "product_link"]:
+                if c in df.columns:
+                    df[c] = pd.Series(df[c]).where(pd.notna(df[c]), None)
+                    df[c] = df[c].apply(
+                        lambda u: (f"https://{u}" if isinstance(u, str) and u and not u.startswith(("http://", "https://")) else u)
+                    )
+
+            # --- Sorting/Filtering/Display (provider-agnostic) ---
             price_source_col = "price_display" if "price_display" in df.columns else ("price_str" if "price_str" in df.columns else "price")
             if price_source_col in df.columns:
                 df["price_value"] = df[price_source_col].apply(normalize_price_str_to_float)
             else:
                 df["price_value"] = None
 
-            # If serp_tools provided total_cost (numeric), mirror a display string for consistency
             if "total_cost" in df.columns and "total_cost_value" not in df.columns:
                 df["total_cost_value"] = pd.to_numeric(df["total_cost"], errors="coerce")
                 df["total_cost_display"] = df["total_cost_value"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
@@ -459,7 +468,7 @@ if submitted and q.strip():
                 df = df.sort_values(by=["deal_vs_avg90_pct", "title"], ascending=[False, True], na_position="last")
             # else: Best match → leave incoming order
 
-            # Columns to show: base + Keepa-aware + serp_tools-aware extras (only if present)
+            # Columns to show
             base_cols = [
                 "title",
                 "price_display", "price_str",
@@ -488,37 +497,112 @@ if submitted and q.strip():
                     show_cols.append(c)
                     seen.add(c)
 
-            st.caption(f"Found {len(df)} item(s)")
-            st.dataframe(df[show_cols] if show_cols else df, use_container_width=True, height=520)
+            # --- Make link columns clickable in the table ---
+            for c in ["product_link", "link"]:
+                if c in df.columns:
+                    df[c] = df[c].astype("string").where(df[c].notna(), None)
 
-            # Rich preview for quick scanning
+            col_config = {}
+            if "product_link" in df.columns:
+                col_config["product_link"] = st.column_config.LinkColumn(
+                    label="Product Link",
+                    display_text="Open",
+                    help="Opens product page in a new tab"
+                )
+            if "link" in df.columns:
+                col_config["link"] = st.column_config.LinkColumn(
+                    label="Link",
+                    display_text="Open",
+                    help="Opens listing in a new tab"
+                )
+
+            st.caption(f"Found {len(df)} item(s)")
+            st.dataframe(
+                df[show_cols] if show_cols else df,
+                use_container_width=True,
+                height=520,
+                column_config=col_config
+            )
+
+            # --- Preview top 5 (NA-safe and schema-friendly) ---
             with st.expander("Preview top 5"):
                 for _, row in df.head(5).iterrows():
-                    title = row.get("title", "")
-                    price = row.get("price_display") or row.get("price_str") or row.get("price", "")
-                    src   = row.get("source") or row.get("merchant") or row.get("seller") or row.get("_source", "")
-                    rating = row.get("rating", "—")
-                    link = row.get("link") or row.get("product_link")
+                    # Title fallback for Google/serp_tools
+                    raw_title = row.get("title") or row.get("name") or row.get("product_title")
+                    title = str(raw_title) if pd.notna(raw_title) else "(untitled)"
 
+                    # Price fallback
+                    raw_price = row.get("price_display") or row.get("price_str") or row.get("price")
+                    price = str(raw_price) if pd.notna(raw_price) else "—"
+
+                    # Source/seller fallback
+                    raw_src = row.get("source") or row.get("merchant") or row.get("seller") or row.get("_source")
+                    src = str(raw_src) if pd.notna(raw_src) else "—"
+
+                    # Rating NA-safe
+                    rating_val = row.get("rating")
+                    rating = "—" if pd.isna(rating_val) else rating_val
+
+                    # Link guard: avoid pd.NA truthiness
+                    link = row.get("link")
+                    if not isinstance(link, str) or not link:
+                        plink = row.get("product_link")
+                        link = plink if isinstance(plink, str) and plink else None
+
+                    # Badges (NA-safe)
                     badges = []
-                    if row.get("deal_badge"): badges.append(str(row["deal_badge"]))
-                    if pd.notnull(row.get("sales_rank_now")): badges.append(f"Rank: {int(row['sales_rank_now'])}")
-                    if pd.notnull(row.get("offer_count_new_now")): badges.append(f"Sellers: {int(row['offer_count_new_now'])}")
-                    if pd.notnull(row.get("resellability_score")): badges.append(f"Score: {float(row['resellability_score']):.1f}")
-                    if row.get("compete"): badges.append(str(row["compete"]))
-                    if row.get("fulfillment"): badges.append(str(row["fulfillment"]))
-                    if row.get("free_shipping"): badges.append("Free ship")
-                    if row.get("in_store_pickup"): badges.append("Store pickup")
-                    if row.get("fast_delivery"): badges.append("Fast delivery")
-                    if row.get("total_cost_display"): badges.append(f"Total: {row['total_cost_display']}")
+                    if isinstance(row.get("deal_badge"), str) and row["deal_badge"]:
+                        badges.append(row["deal_badge"])
+
+                    sr = row.get("sales_rank_now")
+                    if pd.notna(sr):
+                        try:
+                            badges.append(f"Rank: {int(sr)}")
+                        except Exception:
+                            pass
+
+                    ocn = row.get("offer_count_new_now")
+                    if pd.notna(ocn):
+                        try:
+                            badges.append(f"Sellers: {int(ocn)}")
+                        except Exception:
+                            pass
+
+                    rs = row.get("resellability_score")
+                    if pd.notna(rs):
+                        try:
+                            badges.append(f"Score: {float(rs):.1f}")
+                        except Exception:
+                            pass
+
+                    if isinstance(row.get("compete"), str) and row["compete"]:
+                        badges.append(row["compete"])
+                    if isinstance(row.get("fulfillment"), str) and row["fulfillment"]:
+                        badges.append(row["fulfillment"])
+
+                    # Booleans — compare to True explicitly
+                    if row.get("free_shipping") is True:
+                        badges.append("Free ship")
+                    if row.get("in_store_pickup") is True:
+                        badges.append("Store pickup")
+                    if row.get("fast_delivery") is True:
+                        badges.append("Fast delivery")
+
+                    if isinstance(row.get("total_cost_display"), str) and row["total_cost_display"]:
+                        badges.append(f"Total: {row['total_cost_display']}")
+
                     chips = "  ·  ".join(badges)
 
                     st.markdown(
                         f"**{title}**  \n"
                         f"Price: {price}  |  Source: {src}  |  Rating: {rating}  \n"
-                        f"{chips}  \n"
-                        f"{('[Open](' + str(link) + ')') if link else ''}"
+                        f"{chips}"
                     )
+                    if isinstance(link, str) and link:
+                        st.link_button("Open", link)  # opens in a new tab
+                    else:
+                        st.caption("No direct link available for this item.")
+                    st.markdown("---")
 
         except Exception as e:
             st.error(f"Error: {e}")
