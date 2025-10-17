@@ -152,9 +152,15 @@ def search_products(keyword: str, domain: str = "US", max_results: int = 10) -> 
     out: List[Dict[str, Any]] = []
     for p in products:
         p = p or {}
-        data = p.get("data") or {}
+        # histories can be under "csv" depending on the keepa client
+        data = p.get("data") or p.get("csv") or {}
         stats = p.get("stats") or {}
         offers = p.get("offers") or []
+
+    def _usd(cents: Optional[int]) -> Optional[float]:
+        if cents is None or cents < 0:
+            return None
+        return round(cents / 100.0, 2)
 
         # Current-ish values from histories
         price_buybox_now = last_nonneg(data.get("BUY_BOX_SHIPPING"))
