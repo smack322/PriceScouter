@@ -278,20 +278,23 @@ def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
     )
     df = pd.DataFrame(items) if items else pd.DataFrame([])
 
-    # --- Normalize/augment display fields for Keepa results ---
+    if df.empty:
+        return df
 
-    # Price display: prefer 'price_now', fallback to 'price_new' if needed
-    if "price" not in df.columns:
-        if "price_now" in df.columns:
+    # --- Preserve agent-provided display string if present ---
+    # Prefer 'display_price' coming from keepa_tools; mirror to 'price_display' for UI
+    if "price_display" not in df.columns and "display_price" in df.columns:
+        df["price_display"] = df["display_price"]
+
+    # --- Otherwise, compute a display string from numeric fields as fallback ---
+    if "price_display" not in df.columns:
+        if "price_now" in df.columns and df["price_now"].notna().any():
             df["price_display"] = df["price_now"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
-        elif "price_new" in df.columns:
+        elif "price_new" in df.columns and df["price_new"].notna().any():
             df["price_display"] = df["price_new"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
-    else:
-        # If test data already uses 'price' numeric/string, make a display column too
-        if df["price"].dtype != object:
-            df["price_display"] = df["price"].apply(lambda x: f"${x:.2f}" if pd.notnull(x) else None)
         else:
-            df["price_display"] = df["price"]
+            # Nothing usable—create the column so downstream code has it
+            df["price_display"] = None
 
     # Link fallback from ASIN
     if "link" not in df.columns and "asin" in df.columns:
