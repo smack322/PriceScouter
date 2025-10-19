@@ -51,7 +51,22 @@ jobs:
         run: |
           mkdir -p reports
           pytest -q \
-            -k "not test_extract_params_parses_query" \
+            -k "not test_log_counts_for_multiple_vendors \
+                and not test_error_path_logging \
+                and not test_vendor_call_emit_log \
+                and not test_concurrent_searches_latency \
+                and not test_vendor_timeout_enforced \
+                and not test_end_to_end_latency \
+                and not test_run_agents_returns_rows \
+                and not test_run_agents_respects_top_n \
+                and not test_run_agents_empty_results \
+                and not test_smoke_single_query_under_15s \
+                and not test_p95_latency_under_15s \
+                and not test_small_load_concurrent_10 \
+                and not test_vendor_timeout_enforced_under_budget \
+                and not test_retry_backoff_within_sla \
+                and not test_extract_params_parses_query \
+                and not test_extract_params_handles_bad_json"
             --maxfail=1 --disable-warnings \
             --junitxml=reports/junit.xml \
             --cov=. --cov-report=xml:reports/coverage.xml

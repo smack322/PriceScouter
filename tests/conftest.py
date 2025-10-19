@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 import contextlib
 import pytest
+import json
+import types
 
 # ----- Fake Streamlit -----
 class _FakeLinkColumn:
@@ -74,3 +76,19 @@ def _load_env_once():
 _load_env_once()
 
 os.environ.setdefault("DISABLE_LLM", "1")
+
+
+
+class _FakeLLM:
+    def invoke(self, _msgs):
+        class _Resp:
+            content = json.dumps({"query": "fallback", "vendor": None, "limit": None})
+        return _Resp()
+
+def test_extract_params_handles_bad_json(monkeypatch):
+    import agents.app as app
+    monkeypatch.setattr(app, "extract_llm", _FakeLLM())  # <- no network
+    state = {"messages": [DummyMessage("fallback")]}
+    result = app.extract_params(state)
+    assert result["query"] == "fallback"
+    assert result["vendor"] is None
