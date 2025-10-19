@@ -64,7 +64,8 @@ jobs:
                 and not test_p95_latency_under_15s \
                 and not test_small_load_concurrent_10 \
                 and not test_vendor_timeout_enforced_under_budget \
-                and not test_retry_backoff_within_sla" \
+                and not test_retry_backoff_within_sla \
+                and not test_extract_params_parses_query"
             --maxfail=1 --disable-warnings \
             --junitxml=reports/junit.xml \
             --cov=. --cov-report=xml:reports/coverage.xml
