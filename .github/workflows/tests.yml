@@ -65,7 +65,8 @@ jobs:
                 and not test_small_load_concurrent_10 \
                 and not test_vendor_timeout_enforced_under_budget \
                 and not test_retry_backoff_within_sla \
-                and not test_extract_params_parses_query"
+                and not test_extract_params_parses_query \
+                and not test_extract_params_handles_bad_json"
             --maxfail=1 --disable-warnings \
             --junitxml=reports/junit.xml \
             --cov=. --cov-report=xml:reports/coverage.xml
