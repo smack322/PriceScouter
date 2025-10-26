@@ -294,15 +294,29 @@ def amazon_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
 
         # product_link fallback
         if "product_link" not in df.columns:
-            if "link" in df.columns and df["link"].notna().any():
-                df["product_link"] = df["link"]
-            elif "asin" in df.columns:
-                df["product_link"] = df["asin"].apply(lambda a: f"https://www.amazon.com/dp/{a}" if pd.notnull(a) else None)
-            else:
-                df["product_link"] = None
+            df["product_link"] = None
 
-        if "_source" not in df.columns:
-            df["_source"] = "amazon"
+        # 1) take link where present
+        if "link" in df.columns:
+            df["product_link"] = df["product_link"].where(
+                df["product_link"].notna(),
+                df["link"]
+            )
+
+        # 2) backfill missing with dp/ASIN
+        if "asin" in df.columns:
+            df["product_link"] = df["product_link"].where(
+                df["product_link"].notna(),
+                df["asin"].apply(lambda a: f"https://www.amazon.com/dp/{a}" if pd.notnull(a) else None)
+            )
+
+        # 3) normalize scheme (add https:// if someone returned a bare host/path)
+        df["product_link"] = df["product_link"].apply(
+            lambda u: (f"https://{u}" if isinstance(u, str) and u and not u.startswith(("http://", "https://")) else u)
+        )
+
+        # source tag
+        df["_source"] = "amazon"
 
         return df.head(n)
 
@@ -386,8 +400,12 @@ def amazon_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
                 break
 
         page += 1
+    df = pd.DataFrame(items[:n])
 
-    return pd.DataFrame(items[:n])
+    if not df.empty:
+        df["_source"] = "amazon"
+
+    return df
 
 @st.cache_data(show_spinner=False)
 def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:

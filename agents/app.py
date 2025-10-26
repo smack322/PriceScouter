@@ -175,11 +175,35 @@ def extract_params(state: State):
 
 
 # --------------------- 2) Fan-out: run tools in parallel ------------------- #
-async def _safe_ainvoke(tool, kwargs: Dict[str, Any]) -> List[dict]:
+async def _safe_ainvoke(tool, kwargs):
+    """
+    Call LangChain tools/agents whether they are async, sync, or StructuredTool.
+    """
     try:
-        return await tool.ainvoke(kwargs)
+        # Runnable-style async
+        if hasattr(tool, "ainvoke") and callable(getattr(tool, "ainvoke")):
+            return await tool.ainvoke(kwargs)
+
+        # Runnable-style sync (StructuredTool usually implements this)
+        if hasattr(tool, "invoke") and callable(getattr(tool, "invoke")):
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, lambda: tool.invoke(kwargs))
+
+        # Async callable
+        if inspect.iscoroutinefunction(tool):
+            return await tool(kwargs)
+
+        # Plain callable
+        if callable(tool):
+            res = tool(kwargs)
+            if inspect.iscoroutine(res):
+                return await res
+            return res
+
+        return [{"_error": f"Unsupported tool type: {type(tool).__name__}"}]
     except Exception as e:
-        return [{"_error": f"{getattr(tool, 'name', 'tool')}: {e}"}]
+        name = getattr(tool, "name", getattr(tool, "__name__", "tool"))
+        return [{"_error": f"{name}: {e}"}]
 # --- add this new node (and delete the old call_keepa function) ---
 async def call_amazon(state: State):
     p = state["parsed"]
