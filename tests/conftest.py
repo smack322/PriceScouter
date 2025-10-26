@@ -12,6 +12,16 @@ import pytest
 import json
 import types
 
+
+@pytest.fixture(autouse=True)
+def _ci_env():
+    # prevent network/LLM during tests
+    os.environ.setdefault("DISABLE_LLM", "1")
+
+@pytest.fixture
+def parsed_default():
+    return {"query": "test", "max_price": None, "zip_code": "19406", "country": "US"}
+
 # ----- Fake Streamlit -----
 class _FakeLinkColumn:
     def __init__(self, label=None, display_text=None, help=None):
@@ -92,3 +102,24 @@ def test_extract_params_handles_bad_json(monkeypatch):
     result = app.extract_params(state)
     assert result["query"] == "fallback"
     assert result["vendor"] is None
+
+    AMAZON_US = "ATVPDKIKX0DER"
+
+def make_fake_api(products):
+    """
+    products: list[dict] shaped like Keepa products.
+    """
+    class FakeAPI:
+        def __init__(self, prods):
+            self._prods = prods
+
+        def product_finder(self, criteria, domain="US"):
+            # We don't need to parse criteria for tests; return the ASINs we have.
+            return [p.get("asin") for p in self._prods]
+
+        def query(self, asins, domain="US", **kwargs):
+            # Return only the requested ASINs in the same order.
+            keep = {p.get("asin"): p for p in self._prods}
+            return [keep[a] for a in asins if a in keep]
+
+    return FakeAPI(products)

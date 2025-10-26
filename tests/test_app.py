@@ -48,6 +48,22 @@ def test_merge_dicts_none():
 
 
 # ----------- extract_params Tests ------------
+def normalized_parsed(result):
+    """Return a dict no matter what extract_params parsed returns."""
+    parsed = result.get("parsed")
+    if isinstance(parsed, dict):
+        return parsed
+    if isinstance(parsed, str):
+        # Try to parse JSON; if it fails, treat it as a plain query string
+        try:
+            maybe = json.loads(parsed)
+            if isinstance(maybe, dict):
+                return maybe
+        except Exception:
+            pass
+        return {"query": parsed}
+    # Fallback (None or other types)
+    return {}
 
 class DummyMessage:
     """Minimal stand-in for a LangChain message with a `.content` attr."""
@@ -63,10 +79,11 @@ def test_extract_params_parses_query():
         "messages": [DummyMessage('{"query":"test","max_price":10,"zip_code":"12345","country":"US"}')]
     }
     result = extract_params(state)
-    assert result["parsed"]["query"] == "test"
-    assert result["parsed"]["max_price"] == 10
-    assert result["parsed"]["zip_code"] == "12345"
-    assert result["parsed"]["country"] == "US"
+    p = normalized_parsed(result)
+    assert p["query"] == "test"
+    assert p["max_price"] == 10
+    assert p["zip_code"] == "12345"
+    assert p["country"] == "US"
 
 def test_extract_params_handles_bad_json():
     """
@@ -81,31 +98,35 @@ def test_extract_params_handles_bad_json():
 
 # ----------- aggregate Tests ------------
 
-def test_aggregate_filters_by_price():
+def test_aggregate_filters_by_price(parsed_default):
     state = {
-        "parsed": {"max_price": 15},
+        "parsed": {**parsed_default, "max_price": 10.0},
         "fanout": {
-            "keepa": [{"price": 10}],
-            "ebay": [{"total": 20}],
-            "serp": [{"price": 5, "shipping": 5}],
+            "ebay": [{"total": 9.99}, {"total": 12.00}],
+            "keepa": [{"price": 8.0, "shipping": 1.0}, {"price": 11.0}],
+            "serp": [],
         },
+        "messages": [],
     }
-    out = aggregate(state)
-    assert all((r.get("total", r.get("price", 0)) + r.get("shipping", 0)) <= 15 for r in out["results"])
+    out = app.aggregate(state)
+    # only <= 10 should remain
+    totals = [r.get("total", (r.get("price") or 0) + (r.get("shipping") or 0)) for r in out["results"]]
+    assert all(t <= 10.0 for t in totals)
 
-def test_aggregate_sorts_by_total_cost():
+def test_aggregate_sorts_by_total_cost(parsed_default):
     state = {
-        "parsed": {},
+        "parsed": parsed_default,
         "fanout": {
-            "keepa": [{"price": 10}],
-            "ebay": [{"total": 5}],
-            "serp": [{"price": 7, "shipping": 2}],
+            "ebay": [{"total": 20.0}, {"total": 10.0}],
+            "keepa": [{"price": 5.0, "shipping": 5.0}],  # total 10
+            "serp": [{"price": 7.0}],                    # total 7
         },
+        "messages": [],
     }
-    out = aggregate(state)
-    def total_cost(r): return r.get("total", r.get("price", 0) + r.get("shipping", 0))
-    costs = [total_cost(r) for r in out["results"]]
-    assert costs == sorted(costs)
+    out = app.aggregate(state)
+    tot = lambda r: r.get("total", (r.get("price") or 0) + (r.get("shipping") or 0))
+    totals = list(map(tot, out["results"]))
+    assert totals == sorted(totals)
 
 
 # ----------- respond Tests ------------

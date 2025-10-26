@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')
 from agents.client import run_agents
 from agents.agent_keepa import keepa_search
 from agents.agent_ebay import ebay_search
+from agents.agent_amazon import amazon_products
 
 # Optional SerpApi import (fallback path)
 try:
@@ -37,6 +38,14 @@ try:
 except Exception:
     SERP_TOOLS_AVAILABLE = False
 
+
+try:
+    from agents import amazon_tools  # exposes amazon_tools.amazon_search(...)
+    AMAZON_TOOLS_AVAILABLE = True
+    AMAZON_TOOLS_HAS_AMAZON = hasattr(amazon_tools, "amazon_search")
+except Exception:
+    AMAZON_TOOLS_AVAILABLE = False
+    AMAZON_TOOLS_HAS_AMAZON = False
 load_dotenv()
 
 _MAX_LEN = 256
@@ -107,6 +116,21 @@ def sanitize_input_fn(user_input) -> dict:
 def sanitize_input(s: str) -> str:
     return s.strip()
 
+def _to_float(s):
+    """Robust parse of a price-like string into float; returns None if not parseable."""
+    if s is None:
+        return None
+    if isinstance(s, (int, float)):
+        return float(s)
+    try:
+        # take first number; allow comma or dot decimals
+        m = re.search(r"(\d+(?:[.,]\d{1,2})?)", str(s))
+        if not m:
+            return None
+        num = m.group(1).replace(",", "")
+        return float(num)
+    except Exception:
+        return None
 # --------------------------------------------------------------------------------------
 # Utilities
 # --------------------------------------------------------------------------------------
@@ -210,6 +234,161 @@ def serpapi_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
         )
     return pd.DataFrame(items)
 
+# Put near serpapi_search()
+
+_ASIN_RE = re.compile(r"/dp/([A-Z0-9]{10})")
+
+def _asin_from_link(link: str | None) -> str | None:
+    if not link:
+        return None
+    m = _ASIN_RE.search(link)
+    return m.group(1) if m else None
+
+def _loc_to_amazon_domain_and_gl(loc: str | None) -> tuple[str, str]:
+    """Very light mapping; expand as needed."""
+    if not loc:
+        return "amazon.com", "us"
+    s = loc.lower()
+    if "united kingdom" in s or "uk" == s.strip():
+        return "amazon.co.uk", "uk"
+    if "germany" in s or "de" == s.strip():
+        return "amazon.de", "de"
+    if "france" in s or "fr" == s.strip():
+        return "amazon.fr", "fr"
+    if "canada" in s or "ca" == s.strip():
+        return "amazon.ca", "ca"
+    if "spain" in s or "es" == s.strip():
+        return "amazon.es", "es"
+    if "italy" in s or "it" == s.strip():
+        return "amazon.it", "it"
+    # default
+    return "amazon.com", "us"
+
+@st.cache_data(show_spinner=False)
+def amazon_search(q: str, key: str, loc: str | None, n: int) -> pd.DataFrame:
+    """
+    Preferred: amazon_tools.amazon_search() (normalized rows).
+    Fallback: direct SerpApi Amazon engine with pagination until we gather <= n items.
+    """
+    # ---------- Preferred path: serp_tools ----------
+    if AMAZON_TOOLS_AVAILABLE and AMAZON_TOOLS_HAS_AMAZON:
+        if key:
+            os.environ["SERPAPI_API_KEY"] = key
+            os.environ["SERP_API_KEY"] = key
+        amazon_domain, gl = _loc_to_amazon_domain_and_gl(loc)
+        raw_list = amazon_tools.amazon_search(q=q, amazon_domain=amazon_domain, gl=gl, page=1, max_pages=max(1, (n // 16) + 1))
+        df = pd.DataFrame([json.loads(json.dumps(r, default=_to_builtin)) for r in (raw_list or [])])
+        if df.empty:
+            return df
+
+        # price_display
+        if "price_display" not in df.columns:
+            if "price" in df.columns and df["price"].dtype != object:
+                df["price_display"] = df["price"].apply(lambda x: f"${float(x):.2f}" if pd.notnull(x) else None)
+            else:
+                df["price_display"] = df.get("price")
+
+        # merchant normalization
+        if "merchant" not in df.columns and "seller" in df.columns:
+            df["merchant"] = df["seller"]
+
+        # product_link fallback
+        if "product_link" not in df.columns:
+            if "link" in df.columns and df["link"].notna().any():
+                df["product_link"] = df["link"]
+            elif "asin" in df.columns:
+                df["product_link"] = df["asin"].apply(lambda a: f"https://www.amazon.com/dp/{a}" if pd.notnull(a) else None)
+            else:
+                df["product_link"] = None
+
+        if "_source" not in df.columns:
+            df["_source"] = "amazon"
+
+        return df.head(n)
+
+    # ---------- Fallback: direct SerpApi ----------
+    if not SERPAPI_AVAILABLE:
+        raise RuntimeError("Neither amazon_tools nor 'google-search-results' is available.")
+    if not key:
+        raise ValueError("Missing SerpApi API key.")
+
+    os.environ["SERPAPI_API_KEY"] = key
+    os.environ["SERP_API_KEY"] = key
+
+    from serpapi import GoogleSearch  # local import to keep optional
+
+    amazon_domain, gl = _loc_to_amazon_domain_and_gl(loc)
+    items: list[dict] = []
+    seen: set[str] = set()
+
+    # SerpApi Amazon uses 'page' for pagination; collect until we hit n or run out.
+    page = 1
+    while len(items) < n and page <= 5:  # hard guardrail
+        params = {
+            "engine": "amazon",
+            "k": q,
+            "amazon_domain": amazon_domain,
+            "gl": gl,
+            "page": str(page),
+            "api_key": key,
+        }
+        results = GoogleSearch(params).get_dict()
+
+        buckets = []
+        for key_ in ("product_results", "organic_results", "shopping_results", "results"):
+            if isinstance(results.get(key_), list):
+                buckets.extend(results[key_])
+
+        if not buckets:
+            break
+
+        for r in buckets:
+            title = r.get("title")
+            link = r.get("link")
+            asin = r.get("asin") or _asin_from_link(link)
+            dedupe_key = asin or link
+            if not title or not dedupe_key or dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+
+            price_raw = r.get("price")
+            if isinstance(price_raw, dict):
+                price_display = price_raw.get("raw")
+                price_val = price_raw.get("extracted")
+                if price_val is None:
+                    price_val = normalize_price_str_to_float(price_display)
+            else:
+                price_display = price_raw
+                price_val = normalize_price_str_to_float(price_raw)
+
+            # delivery text often contains shipping hints; keep as-is (UI drops banned columns later if needed)
+            delivery = r.get("delivery")
+            merchant = r.get("seller") or r.get("source")
+
+            # prefer direct product link; fallback to dp/ASIN
+            product_link = link or (f"https://{amazon_domain}/dp/{asin}" if asin else None)
+
+            items.append(
+                {
+                    "title": title,
+                    "price_display": price_display,
+                    "price": price_val,
+                    "merchant": merchant,
+                    "rating": r.get("rating"),
+                    "reviews_count": r.get("ratings_total") or r.get("reviews"),
+                    "product_link": product_link,
+                    "asin": asin,
+                    "_source": "amazon",
+                    # keep other keys if you want (badge/is_prime/etc.), your AC drop step will remove banned ones
+                }
+            )
+            if len(items) >= n:
+                break
+
+        page += 1
+
+    return pd.DataFrame(items[:n])
+
 @st.cache_data(show_spinner=False)
 def keepa_agent_search(q: str, n: int = 20) -> pd.DataFrame:
     items = asyncio.run(
@@ -283,7 +462,7 @@ st.set_page_config(page_title="PriceScouter – Chatbot Search UI", page_icon="�
 st.sidebar.title("Settings")
 provider = st.sidebar.selectbox(
     "Data source",
-    ["Mock data", "SerpApi – Google Shopping", "Keepa - Amazon", "eBay", "All"],
+    ["Mock data", "SerpApi – Google Shopping", "SerpApi – Amazon", "eBay", "All"],
     help="Mock data requires no keys. SerpApi calls Google's Shopping results."
 )
 
@@ -347,8 +526,8 @@ if submitted and q.strip():
             elif provider == "SerpApi – Google Shopping":
                 df = serpapi_search(q, api_key, location, n=max_results)
 
-            elif provider == "Keepa - Amazon":
-                df = keepa_agent_search(q, n=max_results)
+            elif provider == "SerpApi – Amazon":
+                df = amazon_search(q, api_key, location, n=max_results)
 
             elif provider == "eBay":
                 df = ebay_agent_search(q, zip_ebay, n=max_results)

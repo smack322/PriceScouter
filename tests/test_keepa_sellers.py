@@ -1,6 +1,7 @@
 import pytest
 import agents.keepa_tools as keepa_tools
-
+from tests.helpers import mk_product, AMAZON_US
+from tests.conftest import make_fake_api
 # ---------------- Unit tests for helpers ----------------
 
 def test_seller_label_from_offer_amazon():
@@ -111,3 +112,75 @@ def test_keepa_prefers_stats_buybox_seller_over_offer_flag(monkeypatch):
     row = out[0]
     assert row["seller"] == "Amazon"   # stats wins
     assert row["buybox_is_fba"] is True
+
+
+def test_keepa_populates_seller_amazon_when_stats_says_amazon(monkeypatch):
+    prod = mk_product(buybox_seller_id=AMAZON_US)
+    monkeypatch.setattr(keepa_tools, "api", make_fake_api([prod]))
+
+    out = keepa_tools.search_products("iphone", max_results=1)
+    assert out, "Expected at least one result"
+    row = out[0]
+
+    assert row["seller"] == "Amazon"
+    assert row["buybox_seller_id"] == AMAZON_US
+    # price_now comes from BUY_BOX_SHIPPING if present
+    assert row["price_now"] == 99.99
+
+def test_keepa_populates_seller_mfn_when_winner_is_mfn(monkeypatch):
+    offers = [{
+        "sellerId": "A3PXXXXXXX",
+        "isAmazon": False,
+        "isBuyBoxWinner": True,
+        "isFBA": False,  # MFN
+        "isPrime": False,
+    }]
+    prod = mk_product(buybox_seller_id="A3PXXXXXXX", offers=offers)
+    monkeypatch.setattr(keepa_tools, "api", make_fake_api([prod]))
+
+    out = keepa_tools.search_products("iphone", max_results=1)
+    assert out
+    row = out[0]
+    assert row["seller"] == "3P (MFN)"
+
+def test_keepa_populates_seller_fba_when_winner_is_fba(monkeypatch):
+    offers = [{
+        "sellerId": "A3FBAAAAAA",
+        "isAmazon": False,
+        "isBuyBoxWinner": True,
+        "isFBA": True,   # FBA
+        "isPrime": True,
+    }]
+    prod = mk_product(buybox_seller_id="A3FBAAAAAA", offers=offers)
+    monkeypatch.setattr(keepa_tools, "api", make_fake_api([prod]))
+
+    out = keepa_tools.search_products("iphone", max_results=1)
+    assert out
+    row = out[0]
+    assert row["seller"] == "3P (FBA)"
+
+def test_keepa_seller_none_when_no_offers_and_no_buybox(monkeypatch):
+    prod = mk_product(buybox_seller_id=None, offers=[])
+    monkeypatch.setattr(keepa_tools, "api", make_fake_api([prod]))
+
+    out = keepa_tools.search_products("iphone", max_results=1)
+    assert out
+    row = out[0]
+    assert row["seller"] is None
+
+def test_keepa_prefers_stats_buybox_seller_over_offer_flag(monkeypatch):
+    # stats says Amazon; offers claim a 3P is BB winner → we prefer stats
+    offers = [{
+        "sellerId": "A3PXXXXXXX",
+        "isAmazon": False,
+        "isBuyBoxWinner": True,
+        "isFBA": True,
+        "isPrime": True,
+    }]
+    prod = mk_product(buybox_seller_id=AMAZON_US, offers=offers)
+    monkeypatch.setattr(keepa_tools, "api", make_fake_api([prod]))
+
+    out = keepa_tools.search_products("iphone", max_results=1)
+    assert out
+    row = out[0]
+    assert row["seller"] == "Amazon"
