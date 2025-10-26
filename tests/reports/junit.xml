@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="22" time="5.304" timestamp="2025-10-17T16:05:56.707727-04:00" hostname="Mac"><testcase classname="tests.test_agent_ebay" name="test_ebay_search_returns_list" time="0.001" /><testcase classname="tests.test_agent_ebay" name="test_basic_search_returns_items" time="0.000" /><testcase classname="tests.test_agent_ebay" name="test_fixed_price_only_filters_items" time="0.000" /><testcase classname="tests.test_agent_ebay" name="test_limit_and_max_results" time="0.000" /><testcase classname="tests.test_agent_keepa" name="test_keepa_search_returns_products" time="0.000" /><testcase classname="tests.test_agent_keepa" name="test_keepa_search_max_results" time="0.000" /><testcase classname="tests.test_agent_keepa" name="test_keepa_search_default_domain" time="0.000" /><testcase classname="tests.test_agent_keepa" name="test_keepa_search_empty_result" time="0.000" /><testcase classname="tests.test_agent_keepa" name="test_keepa_search_includes_enhanced_fields" time="0.000" /><testcase classname="tests.test_agent_keepa" name="test_keepa_search_handles_missing_optional_fields" time="0.000" /><testcase classname="tests.test_agent_keepa" name="test_keepa_search_passes_through_badges_and_flags" time="0.000" /><testcase classname="tests.test_agent_serp" name="test_google_shopping_basic" time="0.000" /><testcase classname="tests.test_agent_serp" name="test_google_shopping_num_limit" time="0.000" /><testcase classname="tests.test_agent_serp" name="test_google_shopping_location" time="0.000" /><testcase classname="tests.test_agent_serp" name="test_google_shopping_empty_result" time="0.000" /><testcase classname="tests.test_app" name="test_to_builtin_handles_basic_types" time="0.000" /><testcase classname="tests.test_app" name="test_to_builtin_raises_on_unknown" time="0.000" /><testcase classname="tests.test_app" name="test_merge_dicts_merges" time="0.000" /><testcase classname="tests.test_app" name="test_merge_dicts_none" time="0.000" /><testcase classname="tests.test_app" name="test_extract_params_parses_query" time="1.762" /><testcase classname="tests.test_app" name="test_extract_params_handles_bad_json" time="1.827" /><testcase classname="tests.test_app" name="test_aggregate_filters_by_price" time="0.001"><failure message="KeyError: 'query'">def test_aggregate_filters_by_price():
+        state = {
+            "parsed": {"max_price": 15},
+            "fanout": {
+                "keepa": [{"price": 10}],
+                "ebay": [{"total": 20}],
+                "serp": [{"price": 5, "shipping": 5}],
+            },
+        }
+&gt;       out = aggregate(state)
+              ^^^^^^^^^^^^^^^^
+
+test_app.py:93: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+state = {'fanout': {'ebay': [{'_source': 'ebay', 'total': 20}], 'keepa': [{'_source': 'keepa', 'price': 10}], 'serp': [{'_source': 'serp', 'price': 5, 'shipping': 5}]}, 'parsed': {'max_price': 15}}
+
+    def aggregate(state: State):
+        p = state["parsed"]
+        max_price = p.get("max_price")
+    
+        fan = state.get("fanout") or {}
+        keepa_rows = fan.get("keepa", []) or []
+        serp_rows  = fan.get("serp",  []) or []
+        ebay_rows  = fan.get("ebay",  []) or []
+    
+        all_rows: List[dict] = []
+        for src, rows in (("keepa", keepa_rows), ("serp", serp_rows), ("ebay", ebay_rows)):
+            for r in rows:
+                r["_source"] = src
+            all_rows.extend(rows)
+    
+        def total_cost(r: dict) -&gt; float:
+            # eBay: already has 'total'
+            if isinstance(r.get("total"), (int, float)):
+                return float(r["total"])
+            # Keepa/Serp: price (+ shipping if provided)
+            price = None
+            for k in ("buybox_price", "price", "current_price"):
+                if r.get(k) is not None:
+                    try:
+                        price = float(r[k])
+                        break
+                    except Exception:
+                        pass
+            shipping = 0.0
+            if r.get("shipping") is not None:
+                try:
+                    shipping = float(r["shipping"])
+                except Exception:
+                    pass
+            return (price or 0.0) + shipping
+    
+        if isinstance(max_price, (int, float)):
+            all_rows = [r for r in all_rows if total_cost(r) &lt;= float(max_price)]
+    
+        all_rows.sort(key=total_cost)
+        # log the merged/filtered set and store them too
+        search_id = log_search_event(
+            agent="aggregate",
+&gt;           query=p["query"],
+                  ^^^^^^^^^^
+            zip_code=p.get("zip_code"),
+            country=p.get("country"),
+            status="success",
+            results=all_rows[:50],      # sample
+            full_payload=all_rows,      # complete merged list
+        )
+E       KeyError: 'query'
+
+../agents/app.py:312: KeyError</failure></testcase></testsuite></testsuites>

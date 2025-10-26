@@ -21,6 +21,7 @@ from langgraph.graph.message import add_messages
 # from agent_serp import google_shopping
 # from agent_ebay import ebay_search
 
+from agents.agent_amazon import amazon_products
 from agents.agent_keepa import keepa_search
 from agents.agent_serp import google_shopping
 from agents.agent_ebay import ebay_search
@@ -33,6 +34,52 @@ import numpy as np
 import time
 import uuid
 from backend.local_db.db import init_db, log_search_event, save_product_results
+
+import os
+import json
+
+def _llm_enabled() -> bool:
+    # Read at call-time (not import-time) so CI env is honored
+    return os.getenv("DISABLE_LLM", "").lower() not in {"1", "true", "yes"}
+
+# Lazy holder; only build when enabled
+_extract_llm = None
+
+def _get_extract_llm():
+    global _extract_llm
+    if _extract_llm is None:
+        # Only construct if enabled
+        if _llm_enabled():
+            from langchain_openai import ChatOpenAI
+            _extract_llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0)
+        else:
+            class _FakeLLM:
+                def invoke(self, _msgs):
+                    class _Resp:
+                        content = json.dumps({"query": "fallback", "vendor": None, "limit": None})
+                    return _Resp()
+            _extract_llm = _FakeLLM()
+    return _extract_llm
+
+def extract_params(state):
+    """
+    Your existing docstring…
+    """
+    # FAST PATH when LLM is disabled: avoid any network calls
+    if not _llm_enabled():
+        # emulate your “bad JSON -> fallback” path deterministically
+        msgs = state.get("messages") or []
+        text = getattr(msgs[-1], "content", None) if msgs else None
+        text = text or ""
+        return {"query": text, "vendor": None, "limit": None}
+
+    # LLM path
+    extract_llm = _get_extract_llm()
+    msg = extract_llm.invoke([
+        {"role": "system", "content": "Extract fields as JSON only."},
+        {"role": "user", "content": f"{state['messages'][-1].content}\n\nReturn only JSON."}
+    ])
+    return json.loads(msg.content)
 
 init_db()
 
@@ -133,6 +180,33 @@ async def _safe_ainvoke(tool, kwargs: Dict[str, Any]) -> List[dict]:
         return await tool.ainvoke(kwargs)
     except Exception as e:
         return [{"_error": f"{getattr(tool, 'name', 'tool')}: {e}"}]
+# --- add this new node (and delete the old call_keepa function) ---
+async def call_amazon(state: State):
+    p = state["parsed"]
+    t0 = time.time()
+    rows = await _safe_ainvoke(
+        amazon_products,
+        {
+            "q": p["query"],
+            "page": 1,
+            "max_pages": 2,                 # tweak as you like
+            "amazon_domain": "amazon.com",
+            "gl": (p.get("country") or "US").lower(),  # 'us', 'uk', 'de', …
+        },
+    )
+    dt = int((time.time() - t0) * 1000)
+    status = "error" if any("_error" in r for r in rows) else "success"
+    search_id = log_search_event(
+        agent="amazon",                    # <- label for analytics
+        query=p["query"],
+        zip_code=p.get("zip_code"),
+        country=p.get("country"),
+        status=status,
+        duration_ms=dt,
+        results=rows
+    )
+    save_product_results(search_id, rows)
+    return {"fanout": {"amazon": rows}}
 
 async def call_keepa(state: State):
     p = state["parsed"]
@@ -225,12 +299,13 @@ def aggregate(state: State):
     max_price = p.get("max_price")
 
     fan = state.get("fanout") or {}
-    keepa_rows = fan.get("keepa", []) or []
+    # keepa_rows = fan.get("keepa", []) or []
+    amazon_rows = fan.get("amazon", []) or []
     serp_rows  = fan.get("serp",  []) or []
     ebay_rows  = fan.get("ebay",  []) or []
 
     all_rows: List[dict] = []
-    for src, rows in (("keepa", keepa_rows), ("serp", serp_rows), ("ebay", ebay_rows)):
+    for src, rows in (("amazon", amazon_rows), ("serp", serp_rows), ("ebay", ebay_rows)):
         for r in rows:
             r["_source"] = src
         all_rows.extend(rows)
@@ -304,21 +379,22 @@ SESSION_ID = uuid.uuid4().hex[:12]
 graph = StateGraph(State)
 
 graph.add_node("extract_params", extract_params)
-graph.add_node("keepa", call_keepa)
+graph.add_node("amazon", call_amazon)
 graph.add_node("serp", call_serp)
 graph.add_node("ebay", call_ebay)
 graph.add_node("aggregate", aggregate)
 graph.add_node("respond", respond)
 
 graph.add_edge(START, "extract_params")
-graph.add_edge("extract_params", "keepa")
+graph.add_edge("extract_params", "amazon")
 graph.add_edge("extract_params", "serp")
 graph.add_edge("extract_params", "ebay")
-graph.add_edge("keepa", "aggregate")
+graph.add_edge("amazon", "aggregate")
 graph.add_edge("serp", "aggregate")
 graph.add_edge("ebay", "aggregate")
 graph.add_edge("aggregate", "respond")
 graph.add_edge("respond", END)
+
 
 app = graph.compile()
 
