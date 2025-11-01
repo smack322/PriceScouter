@@ -2,6 +2,7 @@
 import os
 import json
 import math
+import re
 import argparse
 import pandas as pd
 import numpy as np
@@ -29,26 +30,78 @@ def pick_latest_export(export_root: str) -> str:
     return sorted(candidates)[-1]
 
 def build_text(row) -> str:
-    """
-    High-signal text for embedding.
-    Uses product title + a bit of context (seller/source/price).
-    """
-    parts: List[str] = []
+    parts = []
     title = str(row.get("title") or "").strip()
-    if title:
-        parts.append(title)
+    if title: parts.append(title)
+
     seller = str(row.get("seller") or "").strip()
-    if seller:
-        parts.append(f"Seller: {seller}")
-    source = str(row.get("source") or "").strip()
-    if source:
-        parts.append(f"Source: {source}")
-    total = row.get("total")
-    currency = str(row.get("currency") or "").strip()
-    if pd.notna(total):
-        parts.append(f"Total: {total} {currency}".strip())
-    text = " | ".join(parts)
-    return text[:TEXT_COL_MAXLEN]
+    if seller: parts.append(f"seller {seller}")
+
+    source = _norm_source(row.get("source"))
+    parts.append(f"source {source}")
+
+    total = _clean_price(row.get("total"))
+    currency = _norm_currency(row.get("currency"))
+    if total is not None:
+        parts.append(f"price {total} {currency}")
+
+    if row.get("query"):
+        parts.append(f"for query {row.get('query')}")
+
+    return " | ".join(parts)[:TEXT_COL_MAXLEN]
+
+def _is_nan(x):
+    try:
+        return isinstance(x, float) and math.isnan(x)
+    except Exception:
+        return False
+
+def _norm_source(s):
+    if s is None or _is_nan(s):
+        return "unknown"
+    s = str(s).strip().lower()
+    if "ebay" in s: return "ebay"
+    if "keepa" in s: return "amazon"   # keepa rows are amazon products
+    if "serp"  in s: return "google"
+    return s or "unknown"
+
+def _norm_currency(cur):
+    if cur is None or _is_nan(cur):
+        return "USD"
+    s = str(cur).strip().upper()
+    if s in ("", "NAN", "NULL", "NONE"): return "USD"
+    # common symbol mapping
+    if s in ("$", "USD"): return "USD"
+    if s in ("€", "EUR"): return "EUR"
+    if s in ("£", "GBP"): return "GBP"
+    return s
+
+def _clean_price(x):
+    if x is None or _is_nan(x):
+        return None
+    # handle strings like "NaN", "$1,234.56", "  12.34 "
+    xs = str(x).strip()
+    if xs.upper() in ("", "NAN", "NULL", "NONE"): return None
+    # strip leading currency symbols and commas
+    if xs and not xs[0].isdigit() and xs[0] not in "+-":
+        xs = xs[1:]
+    xs = xs.replace(",", "")
+    try:
+        return float(xs)
+    except Exception:
+        return None
+
+def _norm_link(link, asin=None):
+    if link is None or _is_nan(link):
+        return f"https://www.amazon.com/dp/{asin}" if asin else None
+    s = str(link).strip()
+    if s.lower() == "nan" or s == "":
+        return f"https://www.amazon.com/dp/{asin}" if asin else None
+    return s
+
+def _slug(s):
+    s = "" if s is None or _is_nan(s) else str(s).lower()
+    return re.sub(r"[^a-z0-9]+", "-", s).strip("-")
 
 def main():
     ap = argparse.ArgumentParser()
@@ -87,9 +140,42 @@ def main():
         "id", "title", "source", "seller", "price", "shipping", "total", "currency",
         "link", "created_at", "search_id", "query"
     ]
-    pr = pr[[c for c in keep_cols if c in pr.columns]].copy()
-    pr = pr[pr["title"].notna() & (pr["title"].astype(str).str.strip() != "")]
-    pr = pr.drop_duplicates(subset=["id"]).reset_index(drop=True)
+    # Normalize/clean fields safely
+    if "source" in pr.columns:
+        pr["source"] = pr["source"].apply(_norm_source)
+    else:
+        pr["source"] = "unknown"
+
+    if "currency" in pr.columns:
+        pr["currency"] = pr["currency"].apply(_norm_currency)
+    else:
+        pr["currency"] = "USD"
+
+    for col in ("total", "price", "shipping"):
+        if col in pr.columns:
+            pr[col] = pr[col].apply(_clean_price)
+
+    # Links
+    if "link" in pr.columns:
+        pr["link"] = pr["link"].apply(lambda v: None if v is None or _is_nan(v) or str(v).strip().lower()=="nan" else str(v).strip())
+    else:
+        pr["link"] = None
+
+    # Build a duplicate key and keep the cheapest per key
+    dup_keys = []
+    for _, r in pr.iterrows():
+        if r.get("link"):
+            dup_keys.append(("link", r["link"]))
+        else:
+            dup_keys.append(("sig", _slug(r.get("title")), _slug(r.get("seller")), r.get("source"), r.get("total")))
+    pr["__dupkey"] = dup_keys
+
+    pr.sort_values(by=["total"], ascending=[True], inplace=True, na_position="last")
+    pr = pr.drop_duplicates(subset=["__dupkey"], keep="first").drop(columns=["__dupkey"]).reset_index(drop=True)
+
+    # pr = pr[[c for c in keep_cols if c in pr.columns]].copy()
+    # pr = pr[pr["title"].notna() & (pr["title"].astype(str).str.strip() != "")]
+    # pr = pr.drop_duplicates(subset=["id"]).reset_index(drop=True)
 
     if args.limit is not None:
         pr = pr.head(args.limit)
