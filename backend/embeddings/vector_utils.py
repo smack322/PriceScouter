@@ -1,87 +1,118 @@
-from __future__ import annotations
-new_vecs.append(vec)
-self.faiss_ids[pid] = next_id
-new_ids.append(next_id)
-next_id += 1
-if new_vecs:
-arr = np.vstack(new_vecs).astype("float32")
-self.faiss_index.add(arr)
-self._persist_faiss()
+# backend/embeddings/vector_utils.py
+import os
+import json
+from typing import List, Dict, Any, Optional
 
-
-def search(self, query: str, k: int = 10) -> List[Tuple[str, float]]:
-t0 = time.perf_counter()
-q_emb = self.embedder.embed([query])[0]
-if BACKEND == "supabase":
-with self.conn.cursor() as cur:
-# cosine distance, return similarity = 1 - distance
-cur.execute(
-f"""
-with q as (select %s::vector as v)
-select product_id, 1 - (embedding <=> q.v) as score
-from {self.table}, q
-order by embedding <-> q.v
-limit %s;
-""",
-(q_emb, k),
-)
-rows = cur.fetchall()
-elapsed = (time.perf_counter() - t0) * 1000
-return [(r[0], float(r[1])) for r in rows]
-else:
 import numpy as np
-if self.faiss_index is None or (self.faiss_ids is None):
-return []
-q = _l2_normalize(q_emb).astype("float32").reshape(1, -1)
-sims, idxs = self.faiss_index.search(q, k)
-inv = {v: k for k, v in self.faiss_ids.items()}
-out = []
-for i, s in zip(idxs[0].tolist(), sims[0].tolist()):
-if i == -1:
-continue
-out.append((inv.get(i, ""), float(s)))
-return out
+import pyarrow.parquet as pq
+import pandas as pd
 
 
-def delete(self, product_ids: Iterable[str]):
-if BACKEND == "supabase":
-with self.conn.cursor() as cur:
-cur.execute(
-f"delete from {self.table} where product_id = any(%s)",
-(list(product_ids),),
-)
-self.conn.commit()
-else:
-# Rebuild FAISS (simple approach for small N)
-import numpy as np
-keep = {pid: idx for pid, idx in (self.faiss_ids or {}).items() if pid not in set(product_ids)}
-if not keep:
-self.faiss_index = faiss.IndexFlatIP(self.embedder.dim)
-self.faiss_ids = {}
-self._persist_faiss()
-return
-inv = {v: k for k, v in keep.items()}
-vecs = []
-for pid, i in keep.items():
-# no persistent raw vectors; in real use, store separately; for demo we drop delete support in FAISS
-pass
-# For simplicity: mark IDs removed and rebuild externally if needed.
-self.faiss_ids = keep
-self._persist_faiss()
+class Embedder:
+    def __init__(self, provider: str = "openai", model: str = "", dim: Optional[int] = None):
+        self.provider = (provider or "openai").strip().lower()
+        self.dim = dim
+
+        # --- choose model from env by provider ---
+        if self.provider == "openai":
+            model = model or os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small")
+        else:
+            model = model or os.getenv("SBERT_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+
+        # --- guardrail: prevent cross-provider model names ---
+        openai_like = any(x in model for x in ["text-embedding-3", "text-embedding-ada", "ada-002"])
+        sbert_like  = any("/" in model or x in model.lower()
+                          for x in ["sentence-transformers", "all-minilm", "e5", "gte", "mpnet", "distil"])
+        if self.provider == "sbert" and openai_like:
+            # auto-correct to a sane SBERT default
+            print(f"[Embedder] '{model}' looks like an OpenAI model. Using SBERT default instead.")
+            model = "sentence-transformers/all-MiniLM-L6-v2"
+        if self.provider == "openai" and sbert_like:
+            raise ValueError(f"[Embedder] '{model}' looks like a HuggingFace model. "
+                             f"Set OPENAI_EMBED_MODEL to an OpenAI embedding model name.")
+
+        self.model = model
+
+        if self.provider == "openai":
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+            if not api_key:
+                raise RuntimeError("OPENAI_API_KEY not set. Either set it or use EMBED_PROVIDER=sbert.")
+            from openai import OpenAI  # type: ignore
+            self._client = OpenAI(api_key=api_key)
+            self._backend = "openai"
+        else:
+            from sentence_transformers import SentenceTransformer  # type: ignore
+            self._sbert = SentenceTransformer(self.model)
+            self._backend = "sbert"
+
+    def embed(self, texts: List[str]) -> np.ndarray:
+        """
+        Returns L2-normalized float32 embeddings for cosine/IP search.
+        """
+        if self._backend == "openai":
+            # Requires OPENAI_API_KEY in env
+            out = self._client.embeddings.create(model=self.model, input=texts)
+            vecs = np.array([d.embedding for d in out.data], dtype="float32")
+            # Normalize
+            norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+            norms[norms == 0] = 1.0
+            return (vecs / norms).astype("float32")
+        else:
+            # SBERT can normalize internally
+            from sentence_transformers import SentenceTransformer  # type: ignore
+            return self._sbert.encode(texts, convert_to_numpy=True, normalize_embeddings=True).astype("float32")
 
 
-# ----- Helpers -----
-def _init_faiss(self):
-os.makedirs(pathlib.Path(self.faiss_path).parent, exist_ok=True)
-self.faiss_ids = {}
-if pathlib.Path(self.faiss_path).exists():
-self.faiss_index = faiss.read_index(self.faiss_path)
-else:
-self.faiss_index = faiss.IndexFlatIP(self.embedder.dim)
-if pathlib.Path(self.ids_path).exists():
-self.faiss_ids = json.loads(pathlib.Path(self.ids_path).read_text())
+class VectorStore:
+    """
+    FAISS-backed local vector store loader + search.
+    Expects out_dir to contain:
+      - index.faiss
+      - idmap.npy  (np.int64 product ids aligned with FAISS rows)
+      - meta.parquet (columns: id, text, metadata_json)
+    """
+    def __init__(self, embedder: Embedder, out_dir: str = "./data/faiss"):
+        import faiss  # lazy import
+        self.embedder = embedder
+        self.out_dir = out_dir
+        self.faiss = faiss
 
+        idx_path = os.path.join(out_dir, "index.faiss")
+        idmap_path = os.path.join(out_dir, "idmap.npy")
+        meta_path = os.path.join(out_dir, "meta.parquet")
 
-def _persist_faiss(self):
-faiss.write_index(self.faiss_index, self.faiss_path)
-pathlib.Path(self.ids_path).write_text(json.dumps(self.faiss_ids))
+        if not os.path.exists(idx_path):
+            raise FileNotFoundError(f"Missing FAISS index: {idx_path}")
+        if not os.path.exists(idmap_path):
+            raise FileNotFoundError(f"Missing idmap: {idmap_path}")
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"Missing metadata file: {meta_path}")
+
+        self.index = faiss.read_index(idx_path)
+        self.idmap = np.load(idmap_path)
+
+        meta_df = pq.read_table(meta_path).to_pandas()
+        if "id" not in meta_df.columns or "metadata_json" not in meta_df.columns or "text" not in meta_df.columns:
+            raise ValueError("meta.parquet must contain columns: id, text, metadata_json")
+        self.meta_df: pd.DataFrame = meta_df.set_index("id")
+
+    def search(self, query: str, k: int = 10) -> List[Dict[str, Any]]:
+        qv = self.embedder.embed([query])
+        scores, idxs = self.index.search(qv, k)
+        scores = scores[0]
+        idxs = idxs[0]
+
+        results: List[Dict[str, Any]] = []
+        for pi, score in zip(idxs, scores):
+            if pi < 0:
+                continue
+            prod_id = int(self.idmap[pi])
+            row = self.meta_df.loc[prod_id]
+            meta = json.loads(row["metadata_json"])
+            results.append({
+                "score": float(score),
+                "id": prod_id,
+                "text": row["text"],
+                **meta,  # includes title/source/seller/total/currency/link/query...
+            })
+        return results
