@@ -255,3 +255,7 @@ def save_product_results(search_id: int, rows: List[Dict[str, Any]]) -> int:
                 # Likely unique constraint: (search_id, link, source)
                 pass
     return inserted
+
+if __name__ == "__main__":
+    init_db()
+    print("DB initialized ✅")
