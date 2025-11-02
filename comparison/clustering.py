@@ -1,13 +1,12 @@
+# comparison/clustering.py
 from __future__ import annotations
 import argparse, math, uuid, json
 from dataclasses import dataclass
 from typing import Iterable, List, Dict, Tuple, Optional, Set
 import numpy as np
-
-# Light deps: scikit-learn for cosine, optionally sentence-transformers
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ---- Data contracts (adjust to your ORM/listing shape) ----
+# ---- Data contracts ----
 @dataclass
 class ProductRecord:
     listing_id: str
@@ -30,7 +29,6 @@ def normalize_text(s: str) -> str:
 def normalize_brand(b: Optional[str]) -> Optional[str]:
     if not b: return None
     b = normalize_text(b)
-    # simple map; extend via brand_map.py
     ALIASES = {
         "p g":"procter gamble",
         "p&g":"procter gamble",
@@ -43,18 +41,16 @@ def tokens(s: str) -> List[str]:
 
 def blocking_key(rec: ProductRecord) -> Tuple[str, Tuple[str, ...]]:
     t = tokens(normalize_text(rec.title))
-    key_tokens = tuple(sorted(t[:5]))  # cheap, deterministic; you can swap to MinHash later
+    key_tokens = tuple(sorted(t[:5]))
     b = normalize_brand(rec.brand) or ""
     return (b, key_tokens)
 
-# ---- Embedding (inject real model in prod) ----
+# ---- Embedding (toy BoW to keep tests fast) ----
 def embed_texts(texts: List[str]) -> np.ndarray:
-    # Replace with sentence-transformers (e.g., all-MiniLM-L6-v2) in real code.
-    # Placeholder: simple hashed bag-of-words vectors (keeps unit testable & fast).
-    vocab = {}
-    rows = []
+    vocab: Dict[str,int] = {}
+    rows: List[Dict[int,float]] = []
     for s in texts:
-        vec = {}
+        vec: Dict[int,float] = {}
         for tok in tokens(normalize_text(s)):
             idx = vocab.setdefault(tok, len(vocab))
             vec[idx] = vec.get(idx, 0.0) + 1.0
@@ -64,7 +60,6 @@ def embed_texts(texts: List[str]) -> np.ndarray:
     for i, vec in enumerate(rows):
         for j, v in vec.items():
             X[i, j] = v
-    # L2 normalize
     norms = np.linalg.norm(X, axis=1, keepdims=True) + 1e-8
     return X / norms
 
@@ -92,7 +87,6 @@ def cluster_block(records: List[ProductRecord], theta: float) -> List[List[int]]
     sim = cosine_similarity(X)
     n = len(records)
     dsu = DSU(n)
-    # Brand gate: only link when brands match (normalized)
     norm_brand = [normalize_brand(r.brand) for r in records]
     for i in range(n):
         for j in range(i+1, n):
@@ -113,7 +107,6 @@ def stable_uuid(brand: str, upc: Optional[str], key_tokens: Tuple[str, ...]) -> 
 
 # ---- End-to-end pipeline ----
 def cluster_products(records: Iterable[ProductRecord], theta: float=0.85):
-    # 1) Hard-key groups
     by_upc: Dict[str, List[ProductRecord]] = {}
     soft_pool: List[ProductRecord] = []
     for r in records:
@@ -123,7 +116,7 @@ def cluster_products(records: Iterable[ProductRecord], theta: float=0.85):
             soft_pool.append(r)
 
     clusters: List[List[ProductRecord]] = []
-    # 2) UPC groups → split by brand purity
+    # UPC groups → split by brand purity
     for upc, rs in by_upc.items():
         by_brand: Dict[str, List[ProductRecord]] = {}
         for r in rs:
@@ -131,18 +124,18 @@ def cluster_products(records: Iterable[ProductRecord], theta: float=0.85):
             by_brand.setdefault(b, []).append(r)
         clusters.extend(by_brand.values())
 
-    # 3) Token blocking on the rest
+    # Token blocking on the rest
     blocks: Dict[Tuple[str, Tuple[str, ...]], List[ProductRecord]] = {}
     for r in soft_pool:
         blocks.setdefault(blocking_key(r), []).append(r)
 
-    # 4) Intra-block clustering via embeddings
+    # Intra-block clustering via embeddings
     for key, rs in blocks.items():
         idx_groups = cluster_block(rs, theta)
         for g in idx_groups:
             clusters.append([rs[i] for i in g])
 
-    # 5) Canonicalization & aggregates
+    # Canonicalization & aggregates
     outputs = []
     memberships = []
     for group in clusters:
@@ -193,10 +186,10 @@ def main():
     outputs, memberships = cluster_products(records, theta=args.theta)
 
     if args.write:
-        persist(outputs, memberships)  # ORM → SQLite/Supabase
+        persist(outputs, memberships)
     else:
         print(f"Preview canonical products: {len(outputs)}")
-        print(json.dumps(outputs[:5], indent=2) )
+        print(json.dumps(outputs[:5], indent=2))
 
 if __name__ == "__main__":
     main()

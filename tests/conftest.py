@@ -11,6 +11,11 @@ import contextlib
 import pytest
 import json
 import types
+import shutil
+import tempfile
+import numpy as np
+
+from tests.db_fixtures import *
 
 
 @pytest.fixture(autouse=True)
@@ -123,3 +128,75 @@ def make_fake_api(products):
             return [keep[a] for a in asins if a in keep]
 
     return FakeAPI(products)
+
+# ---------- Deterministic Dummy Embedder ----------
+class DummyEmbedder:
+    def __init__(self, dim=384):
+        self.model = "dummy"
+        self.dim = dim
+    def embed(self, texts):
+        out = []
+        for t in texts:
+            rng = np.random.default_rng(abs(hash(t)) % (2**32))
+            v = rng.normal(size=self.dim).astype("float32")
+            v /= np.linalg.norm(v) + 1e-9
+            out.append(v.tolist())
+        return out
+
+@pytest.fixture
+def dummy_embedder_384():
+    return DummyEmbedder(dim=384)
+
+@pytest.fixture
+def dummy_embedder_1536():
+    return DummyEmbedder(dim=1536)
+
+# ---------- FAISS-backed VectorStore with temp index ----------
+@pytest.fixture
+def faiss_store_dummy(tmp_path, monkeypatch, dummy_embedder_384):
+    # Force FAISS backend, no network
+    monkeypatch.setenv("VECTOR_BACKEND", "faiss")
+    monkeypatch.setenv("EMBED_PROVIDER", "sbert")
+    monkeypatch.setenv("PGVECTOR_DIM", "384")
+    monkeypatch.setenv("FAISS_INDEX_PATH", str(tmp_path / "index.bin"))
+    monkeypatch.setenv("FAISS_IDS_PATH", str(tmp_path / "ids.json"))
+
+    from vector_utils import VectorStore
+    vs = VectorStore(embedder=dummy_embedder_384)
+    return vs
+
+def upsert_titles(vstore, items):
+    """items: list of (product_id, title) to embed+upsert."""
+    vecs = vstore.embedder.embed([t for _, t in items])
+    vstore.upsert_embeddings(list(zip([i for i, _ in items], vecs)))
+
+def seed_n(vstore, n=1000, prefix="item"):
+    rows = [(f"pid-{i}", f"{prefix} {i}") for i in range(n)]
+    upsert_titles(vstore, rows)
+
+def timed_ms(fn):
+    import time
+    t0 = time.perf_counter()
+    _ = fn()
+    return (time.perf_counter() - t0) * 1000.0
+
+# ---------- pgvector integration helpers ----------
+def pg_available():
+    try:
+        import psycopg  # noqa: F401
+        return True
+    except Exception:
+        return False
+
+@pytest.fixture
+def pg_env(monkeypatch):
+    """Skip if Postgres env not configured."""
+    if not pg_available():
+        pytest.skip("psycopg not installed")
+    dsn = os.getenv("SUPABASE_DB_URL") or os.getenv("PG_DSN")
+    if not dsn:
+        pytest.skip("No Postgres DSN in SUPABASE_DB_URL / PG_DSN")
+    # Force supabase backend
+    monkeypatch.setenv("VECTOR_BACKEND", "supabase")
+    monkeypatch.setenv("PGVECTOR_TABLE", os.getenv("PGVECTOR_TABLE", "product_embeddings"))
+    return dsn

@@ -1,4 +1,18 @@
+import numpy as np
 AMAZON_US = "ATVPDKIKX0DER"
+
+class DummyEmbedder:
+    def __init__(self, dim=384):
+        self.model = "dummy"
+        self.dim = dim
+    def embed(self, texts):
+        out = []
+        for t in texts:
+            rng = np.random.default_rng(abs(hash(t)) % (2**32))
+            v = rng.normal(size=self.dim).astype("float32")
+            v /= np.linalg.norm(v) + 1e-9
+            out.append(v.tolist())
+        return out
 
 def bb_history(cents):
     # Keepa histories use -1 for “no data”; we include one valid latest price
@@ -45,3 +59,8 @@ def mk_product(
         "reviewRating": review_rating,
         "reviewCount": review_count,
     }
+    
+def upsert_titles(vstore, items):
+    """items: list of (product_id, title) to embed+upsert."""
+    vecs = vstore.embedder.embed([t for _, t in items])
+    vstore.upsert_embeddings(list(zip([i for i, _ in items], vecs)))
