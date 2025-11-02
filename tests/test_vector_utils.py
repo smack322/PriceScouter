@@ -1,79 +1,42 @@
-import os, math, tempfile, json
-import numpy as np
+# tests/test_vector_utils.py
+import os
 import pytest
+import numpy as np
+# from tests.helpers import upsert_titles, seed_n, timed_ms
 
+# from conftest import upsert_titles, seed_n, timed_ms
 
-# Force FAISS backend locally for tests
-os.environ.setdefault("VECTOR_BACKEND", "faiss")
-os.environ.setdefault("EMBED_PROVIDER", "sbert")
-os.environ.setdefault("SBERT_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
-os.environ.setdefault("PGVECTOR_DIM", "384")
+def test_embedding_dimensionality(dummy_embedder_384):
+    vecs = dummy_embedder_384.embed(["foo"])
+    assert len(vecs[0]) == 384
 
+def test_similarity_ranking(faiss_store_dummy):
+    items = [
+        ("p1", "apple iphone 13 128gb"),
+        ("p2", "iphone 13 by apple"),
+        ("p3", "garden hose 50ft"),
+    ]
+    upsert_titles(faiss_store_dummy, items)
+    hits = faiss_store_dummy.search("iphone 13", k=2)
+    ids = [i for i, _ in hits]
+    assert {"p1", "p2"}.issubset(set(ids))
 
-# Optionally monkeypatch the embedder to avoid external calls
-class DummyEmbedder:
-  def __init__(self, dim=8):
-    self.model = "dummy"
-    self.dim = dim
-  def embed(self, texts):
-  # deterministic toy embeddings: hash → vector on unit sphere
-    out = []
-    for t in texts:
-    rng = np.random.default_rng(abs(hash(t)) % (2**32))
-    v = rng.normal(size=self.dim).astype("float32")
-    v /= np.linalg.norm(v) + 1e-9
-    out.append(v.tolist())
-    return out
+def test_upsert_idempotency(faiss_store_dummy):
+    upsert_titles(faiss_store_dummy, [("pX", "test title A")])
+    first = faiss_store_dummy.search("test title A", k=1)
+    upsert_titles(faiss_store_dummy, [("pX", "test title B")])  # same id, new vec
+    second = faiss_store_dummy.search("test title B", k=1)
+    assert first and second  # both calls succeed
+    # same internal id should map to pX still
+    assert second[0][0] == "pX"
 
+def test_search_empty_title_returns_empty(faiss_store_dummy):
+    assert faiss_store_dummy.search("", k=10) == []
 
-@pytest.fixture
-def vector_store_tmp(monkeypatch, tmp_path):
-  from vector_utils import VectorStore
-  dummy = DummyEmbedder(dim=32)
-  monkeypatch.setenv("FAISS_INDEX_PATH", str(tmp_path/"idx.bin"))
-  monkeypatch.setenv("FAISS_IDS_PATH", str(tmp_path/"ids.json"))
-  vs = VectorStore(embedder=dummy)
-  return vs
-
-
-def test_upsert_and_search_similarity(vector_store_tmp):
-  vs = vector_store_tmp
-  items = [
-  ("p1", vs.embedder.embed(["apple iphone 13 smartphone"])[0]),
-  ("p2", vs.embedder.embed(["iphone 13 by apple phone 128gb"])[0]),
-  ("p3", vs.embedder.embed(["garden hose 50ft"])[0]),
-  ]
-  vs.upsert_embeddings(items)
-
-
-  res = vs.search("iphone 13", k=2)
-  assert res, "should return neighbors"
-  ids = [r[0] for r in res]
-  assert "p1" in ids and "p2" in ids, "similar items should rank at top"
-
-
-
-
-def test_dimensionality_matches(monkeypatch):
-  from vector_utils import Embedder
-  dummy = DummyEmbedder(dim=64)
-  assert dummy.dim == 64
-
-
-@pytest.mark.slow
-def test_latency_under_100ms(vector_store_tmp):
-  vs = vector_store_tmp
-  # Populate ~1000 random items
-  vecs = []
-  for i in range(1000):
-  pid = f"pid-{i}"
-  emb = vs.embedder.embed([f"item {i}"])[0]
-  vecs.append((pid, emb))
-  vs.upsert_embeddings(vecs)
-
-
-  import time
-  t0 = time.perf_counter()
-  _ = vs.search("item 42", k=10)
-  dt = (time.perf_counter() - t0) * 1000
-  assert dt <= 100.0, f"expected ≤100 ms, got {dt:.1f} ms"
+@pytest.mark.performance
+def test_ann_latency_under_100ms(faiss_store_dummy):
+    seed_n(faiss_store_dummy, n=1000)
+    # warmup
+    faiss_store_dummy.search("item 42", k=10)
+    ms = timed_ms(lambda: faiss_store_dummy.search("item 42", k=10))
+    assert ms <= 100.0, f"Expected ≤100 ms, got {ms:.1f} ms"
