@@ -59,31 +59,34 @@ def main():
     # ---- Build labeled duplicate pairs by (search_id, product_id) ----
     pairs = []
     pair_id = 1
-    for (sid, pid), g in df.groupby(["search_id", "product_id"]):
+    for pid, g in df.groupby("product_id"):
         lids = sorted(g["listing_id"].astype(str).tolist())
-        for a, b in itertools.combinations(lids, 2):
-            pairs.append((pair_id, a, b, 1))  # duplicate
-            pair_id += 1
+        if len(lids) < 2:
+            continue
+        for a_idx in range(len(lids)):
+            for b_idx in range(a_idx+1, len(lids)):
+                a, b = lids[a_idx], lids[b_idx]
+                pairs.append((pair_id, a, b, 1))  # duplicate
+                pair_id += 1
 
     # Optional: add some **non-duplicate** pairs for balance (sample within same search_id but different product_id)
     # Keep it modest to avoid exploding the dataset.
     # For each search, take a small sample of cross-product_id pairs:
+    # Negatives: sample across different product_id globally
     neg = []
-    for sid, g in df.groupby("search_id"):
-        by_pid = [sorted(x) for _, x in g.groupby("product_id")["listing_id"]]
-        flats = [x for sub in by_pid for x in sub]
-        # take up to 100 random cross pairs per search (deterministic sample)
-        for i in range(min(len(flats), 50)):
-            for j in range(i+1, min(len(flats), 50)):
-                a, b = flats[i], flats[j]
-                # skip if same product_id cluster (we only want negatives here)
-                pa = df.loc[df["listing_id"]==a, "product_id"].iloc[0]
-                pb = df.loc[df["listing_id"]==b, "product_id"].iloc[0]
-                if pa != pb:
-                    neg.append((pair_id, a, b, 0))
-                    pair_id += 1
-                if len(neg) >= 100: break
-            if len(neg) >= 100: break
+    # Small deterministic pool
+    pool = df[["listing_id","product_id"]].sample(n=min(300, len(df)), random_state=13)
+    pool = pool.reset_index(drop=True).astype(str)
+
+    for i in range(min(len(pool), 80)):
+        for j in range(i+1, min(len(pool), 80)):
+            if pool.loc[i, "product_id"] != pool.loc[j, "product_id"]:
+                neg.append((pair_id, pool.loc[i,"listing_id"], pool.loc[j,"listing_id"], 0))
+                pair_id += 1
+            if len(neg) >= 200:
+                break
+        if len(neg) >= 200:
+            break
 
     with open(OUT_PAIRS, "w", newline="") as f:
         w = csv.writer(f)
