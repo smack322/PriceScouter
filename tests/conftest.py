@@ -14,8 +14,10 @@ import types
 import shutil
 import tempfile
 import numpy as np
+import re
 
 from tests.db_fixtures import *
+from sqlalchemy import create_engine, text
 
 
 @pytest.fixture(autouse=True)
@@ -241,3 +243,146 @@ def mini_search_history(tmp_path):
     p = tmp_path / "search_history.csv"
     p.write_text("id,query\n1,iphone 15 case\n")
     return p
+
+SAMPLE_ROWS = [
+    # Best Buy Otterbox (39.09)
+    dict(id=1, search_id=9, source="unknown",
+         title="Otterbox Defender Pro Case for Apple iPhone 15 / iPhone 14 / iPhone 13",
+         link=None, seller="Best Buy", price=39.09, shipping=None, total=39.09,
+         currency=None, rating=4.7, reviews_count=632, extra="{}",
+         raw=json.dumps({"title":"Otterbox Defender Pro Case for Apple iPhone 15 / iPhone 14 / iPhone 13",
+                         "price":39.09,"price_str":"$39.09","seller":"Best Buy",
+                         "product_link":"https://www.google.com/search?ibp=oshop&q=iphone 15 case&prds=catalogid:7920095867532335495",
+                         "rating":4.7,"reviews_count":632,"product_id":"7920095867532335495",
+                         "total_cost":39.09,"brand_guess":"Otterbox"})),
+    # Apple MagSafe (49)
+    dict(id=2, search_id=9, source="unknown",
+         title="Apple MagSafe Case for iPhone 15",
+         link=None, seller="Apple", price=49.0, shipping=None, total=49.0,
+         currency=None, rating=4.4, reviews_count=295, extra="{}",
+         raw=json.dumps({"title":"Apple MagSafe Case for iPhone 15",
+                         "price":49.0,"price_str":"$49.00","seller":"Apple",
+                         "product_link":"https://www.google.com/search?ibp=oshop&q=iphone 15 case&prds=catalogid:3917673451152378843",
+                         "rating":4.4,"reviews_count":295,"product_id":"3917673451152378843",
+                         "total_cost":49.0,"brand_guess":"Apple"})),
+    # Best Buy Speck (29.99)
+    dict(id=3, search_id=9, source="unknown",
+         title="Speck Presidio Perfect Clear MagSafe Case for Apple iPhone 15 / iPhone 14 / iPhone 13",
+         link=None, seller="Best Buy", price=29.99, shipping=None, total=29.99,
+         currency=None, rating=4.6, reviews_count=153, extra="{}",
+         raw=json.dumps({"title":"Speck Presidio Perfect Clear MagSafe Case for Apple iPhone 15 / iPhone 14 / iPhone 13",
+                         "price":29.99,"product_link":"https://www.google.com/search?ibp=oshop&q=iphone 15 case&prds=catalogid:792030822556606110",
+                         "rating":4.6,"reviews_count":153,"product_id":"792030822556606110",
+                         "total_cost":29.99,"brand_guess":"Speck"})),
+    # Walmart Otterbox (39) – same product_id as new one to force canonical collapse
+    dict(id=4, search_id=9, source="unknown",
+         title="OtterBox Defender Series Pro MagSafe Case for Apple iPhone 15",
+         link=None, seller="Walmart", price=39.0, shipping=None, total=39.0,
+         currency=None, rating=None, reviews_count=None, extra="{}",
+         raw=json.dumps({"title":"OtterBox Defender Series Pro MagSafe Case for Apple iPhone 15",
+                         "price":39.0,"product_link":"https://www.google.com/search?ibp=oshop&q=iphone 15 case&prds=catalogid:10259123632034479621",
+                         "product_id":"10259123632034479621",
+                         "total_cost":39.0,"brand_guess":"OtterBox"})),
+]
+
+CREATE_TABLES = """
+PRAGMA journal_mode=WAL;
+CREATE TABLE IF NOT EXISTS product_results (
+  id INTEGER PRIMARY KEY,
+  search_id INTEGER,
+  source TEXT,
+  title TEXT,
+  link TEXT,
+  seller TEXT,
+  price REAL,
+  shipping TEXT,
+  total REAL,
+  currency TEXT,
+  rating REAL,
+  reviews_count INTEGER,
+  extra TEXT,
+  raw TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE IF NOT EXISTS search_history (
+  id INTEGER PRIMARY KEY,
+  query TEXT,
+  zip_code TEXT,
+  country TEXT,
+  agent TEXT,
+  status TEXT,
+  duration_ms INTEGER,
+  results_count INTEGER,
+  results_sample TEXT,
+  full_payload TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+"""
+
+DROP_VIEW = "DROP VIEW IF EXISTS canonical_product_view;"
+CREATE_VIEW = """
+CREATE VIEW canonical_product_view AS
+WITH base AS (
+  SELECT
+    id AS row_id,
+    COALESCE(
+      json_extract(raw, '$.product_id'),
+      lower(trim(replace(replace(title, '®',''), '™','')))
+    ) AS canonical_key,
+    title, seller, source, link,
+    COALESCE(link, json_extract(raw, '$.product_link')) AS product_url,
+    CAST(total AS REAL) AS total_price,
+    CAST(price AS REAL) AS unit_price,
+    currency,
+    created_at
+  FROM product_results
+)
+SELECT
+  row_number() OVER (ORDER BY (SELECT NULL)) AS canonical_id,
+  canonical_key,
+  (SELECT b2.title FROM base b2
+   WHERE b2.canonical_key = b.canonical_key
+   ORDER BY COALESCE(b2.total_price, b2.unit_price) ASC, b2.created_at ASC
+   LIMIT 1) AS title,
+  MIN(COALESCE(total_price, unit_price)) AS min_price,
+  AVG(COALESCE(total_price, unit_price)) AS avg_price,
+  MAX(COALESCE(total_price, unit_price)) AS max_price,
+  COUNT(DISTINCT seller) AS seller_count,
+  COUNT(*) AS total_listings,
+  (SELECT b2.product_url FROM base b2
+   WHERE b2.canonical_key = b.canonical_key
+   ORDER BY COALESCE(b2.total_price, b2.unit_price) ASC, b2.created_at ASC
+   LIMIT 1) AS representative_url
+FROM base b
+GROUP BY canonical_key;
+"""
+
+def _run_many(conn, sql_block: str):
+    parts = [p.strip() for p in re.split(r';\s*(?:\n|$)', sql_block) if p.strip()]
+    for stmt in parts:
+        conn.exec_driver_sql(stmt)
+
+@pytest.fixture(scope="session")
+def engine():
+    eng = create_engine("sqlite+pysqlite:///:memory:", future=True)
+    with eng.begin() as conn:
+        # one statement at a time
+        _run_many(conn, CREATE_TABLES)
+        # seed
+        for r in SAMPLE_ROWS:
+            cols = ",".join(r.keys())
+            vals = ":" + ",:".join(r.keys())
+            conn.execute(text(f"INSERT INTO product_results ({cols}) VALUES ({vals})"), r)
+        conn.execute(text(
+            "INSERT INTO search_history (id, query, agent, status, results_count) "
+            "VALUES (1,'iphone 15 case','serp','success',40)"
+        ))
+        # drop then create view (two separate calls)
+        conn.exec_driver_sql(DROP_VIEW)
+        conn.exec_driver_sql(CREATE_VIEW)
+    return eng
+
+@pytest.fixture()
+def conn(engine):
+    with engine.begin() as c:
+        yield c
