@@ -1,0 +1,6 @@
+metric,value
+Pairwise Precision,0.0
+Pairwise Recall,0.0
+Pairwise F1,0.0
+Cluster Purity,0.0
+Runtime (s),0.038918000005651265

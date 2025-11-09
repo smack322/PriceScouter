@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
-import argparse, csv, os, time, subprocess
+import argparse, csv, os, time, subprocess, sys
 from datetime import datetime
 import pandas as pd
 from collections import defaultdict
+
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
 
 from comparison.clustering import ProductRecord, cluster_products
 from comparison.metrics import cluster_purity, pairwise_prf  # add pairwise_prf per prior snippet
@@ -52,8 +56,8 @@ def memberships_to_clusters(memberships):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--products", default="data/eval/products_eval.csv")
-    ap.add_argument("--pairs",    default="data/eval/labeled_pairs.csv")
+    ap.add_argument("--products", default="local_db/data/eval/products_eval.csv")
+    ap.add_argument("--pairs",    default="local_db/data/eval/labeled_pairs.csv")
     ap.add_argument("--theta",    type=float, default=0.85)
     ap.add_argument("--outdir",   default="reports")
     args = ap.parse_args()
