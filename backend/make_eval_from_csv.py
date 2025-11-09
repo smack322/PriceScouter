@@ -2,10 +2,10 @@
 import os, json, itertools, csv
 import pandas as pd
 
-SRC_RESULTS = os.getenv("SRC_RESULTS", "product_results.csv")
-SRC_SEARCH  = os.getenv("SRC_SEARCH",  "search_history.csv")
-OUT_PROD    = os.getenv("OUT_PROD",   "local_db/data/eval/products_eval.csv")
-OUT_PAIRS   = os.getenv("OUT_PAIRS",  "local_db/data/eval/labeled_pairs.csv")
+SRC_RESULTS = os.getenv("SRC_RESULTS", "backend/local_db/data/exports/20251101T155327Z/product_results.csv")
+SRC_SEARCH  = os.getenv("SRC_SEARCH",  "backend/local_db/data/exports/20251101T155327Z/search_history.csv")
+OUT_PROD    = os.getenv("OUT_PROD",   "backend/local_db/data/eval/products_eval.csv")
+OUT_PAIRS   = os.getenv("OUT_PAIRS",  "backend/local_db/data/eval/labeled_pairs.csv")
 
 def safe_get(d, path, default=None):
     cur = d
