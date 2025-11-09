@@ -7,7 +7,7 @@ from pathlib import Path
 import importlib.util
 import sys
 from pathlib import Path
-import contextlib
+import contextlib, textwrap, pandas as pd
 import pytest
 import json
 import types
@@ -200,3 +200,44 @@ def pg_env(monkeypatch):
     monkeypatch.setenv("VECTOR_BACKEND", "supabase")
     monkeypatch.setenv("PGVECTOR_TABLE", os.getenv("PGVECTOR_TABLE", "product_embeddings"))
     return dsn
+
+@pytest.fixture
+def mini_product_results(tmp_path):
+    """Small product_results.csv with guaranteed duplicates via product_id."""
+    p = tmp_path / "product_results.csv"
+    # 4 rows: 2 duplicates for pid=A, 2 duplicates for pid=B
+    rows = [
+        dict(id=1, search_id=9, source="unknown",
+             title="Otterbox Defender iPhone 15", link="",
+             seller="Best Buy", price=39.09, shipping="", total=39.09, currency="USD",
+             rating=4.7, reviews_count=632, extra="{}",
+             raw=json.dumps({"title":"Otterbox Defender iPhone 15","price":39.09,"total_cost":39.09,
+                             "seller":"Best Buy","product_id":"A","brand_guess":"OtterBox"})),
+        dict(id=2, search_id=9, source="unknown",
+             title="Otterbox Defender for iPhone 15", link="",
+             seller="Target", price=38.99, shipping="", total=38.99, currency="USD",
+             rating=4.5, reviews_count=100, extra="{}",
+             raw=json.dumps({"title":"Otterbox Defender for iPhone 15","price":38.99,"total_cost":38.99,
+                             "seller":"Target","product_id":"A","brand_guess":"OtterBox"})),
+        dict(id=3, search_id=9, source="unknown",
+             title="Apple MagSafe Case iPhone 15", link="",
+             seller="Apple", price=49.00, shipping="", total=49.00, currency="USD",
+             rating=4.4, reviews_count=295, extra="{}",
+             raw=json.dumps({"title":"Apple MagSafe Case iPhone 15","price":49.0,"total_cost":49.0,
+                             "seller":"Apple","product_id":"B","brand_guess":"Apple"})),
+        dict(id=4, search_id=9, source="unknown",
+             title="iPhone 15 MagSafe Case by Apple", link="",
+             seller="Apple", price=49.00, shipping="", total=49.00, currency="USD",
+             rating=4.4, reviews_count=296, extra="{}",
+             raw=json.dumps({"title":"iPhone 15 MagSafe Case by Apple","price":49.0,"total_cost":49.0,
+                             "seller":"Apple","product_id":"B","brand_guess":"Apple"})),
+    ]
+    pd.DataFrame(rows).to_csv(p, index=False)
+    return p
+
+@pytest.fixture
+def mini_search_history(tmp_path):
+    """Search history isn’t required by the builder, but we supply a stub path for consistency."""
+    p = tmp_path / "search_history.csv"
+    p.write_text("id,query\n1,iphone 15 case\n")
+    return p

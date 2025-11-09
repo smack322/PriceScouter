@@ -26,27 +26,54 @@ def load_products_csv(path: str):
         ))
     return recs
 
-def load_labels_from_pairs(path: str):
-    df = pd.read_csv(path)
-    # union-find on positive pairs to convert to gold clusters
+def load_labels_from_pairs_and_products(pairs_csv: str, products_csv: str):
+    import pandas as pd
+    pdf = pd.read_csv(products_csv, usecols=["listing_id"]).astype(str)
+    ids_all = set(pdf["listing_id"].tolist())
+
+    # union-find on positive pairs
     parent = {}
     def find(x):
-        parent.setdefault(x,x)
-        while parent[x]!=x:
-            parent[x]=parent[parent[x]]
-            x=parent[x]
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
         return x
     def union(a,b):
         ra, rb = find(a), find(b)
-        if ra!=rb: parent[rb]=ra
+        if ra != rb:
+            parent[rb] = ra
 
+    df = pd.read_csv(pairs_csv)
     for _, r in df.iterrows():
-        if int(r["is_duplicate"])==1:
+        if int(r["is_duplicate"]) == 1:
             union(str(r["id_a"]), str(r["id_b"]))
 
-    # flatten to {listing_id: gold_label}
-    labels = {lid: find(lid) for lid in list(parent.keys())}
+    # Everyone gets a label: positives by component root; singletons label to self
+    labels = {lid: (find(lid) if lid in parent else lid) for lid in ids_all}
     return labels
+
+# def load_labels_from_pairs(path: str):
+#     df = pd.read_csv(path)
+#     # union-find on positive pairs to convert to gold clusters
+#     parent = {}
+#     def find(x):
+#         parent.setdefault(x,x)
+#         while parent[x]!=x:
+#             parent[x]=parent[parent[x]]
+#             x=parent[x]
+#         return x
+#     def union(a,b):
+#         ra, rb = find(a), find(b)
+#         if ra!=rb: parent[rb]=ra
+
+#     for _, r in df.iterrows():
+#         if int(r["is_duplicate"])==1:
+#             union(str(r["id_a"]), str(r["id_b"]))
+
+#     # flatten to {listing_id: gold_label}
+#     labels = {lid: find(lid) for lid in list(parent.keys())}
+#     return labels
 
 def memberships_to_clusters(memberships):
     by = defaultdict(list)
@@ -65,7 +92,7 @@ def main():
     os.makedirs(args.outdir, exist_ok=True)
 
     recs = load_products_csv(args.products)
-    labels = load_labels_from_pairs(args.pairs)
+    labels = load_labels_from_pairs_and_products(args.pairs, args.products)
 
     t0 = time.perf_counter()
     outputs, memberships = cluster_products(recs, theta=args.theta)
@@ -73,8 +100,8 @@ def main():
 
     pred_clusters = memberships_to_clusters(memberships)
     # Keep only items that exist in labels for fair comparison
-    pred_clusters = [[x for x in c if x in labels] for c in pred_clusters]
-    pred_clusters = [c for c in pred_clusters if c]
+    # pred_clusters = [[x for x in c if x in labels] for c in pred_clusters]
+    # pred_clusters = [c for c in pred_clusters if c]
 
     prf = pairwise_prf(pred_clusters, labels)
     purity = cluster_purity(pred_clusters, labels)
