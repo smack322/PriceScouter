@@ -15,6 +15,8 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
+from frontend.ui_results import render_results
+
 # --- Project import path (assumes this file is in frontend/ and project root is one level up) ---
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
@@ -476,6 +478,7 @@ def ebay_agent_search(q: str, zip_code: str, n: int = 20) -> pd.DataFrame:
 # Streamlit page config & sidebar
 # --------------------------------------------------------------------------------------
 st.set_page_config(page_title="PriceScouter – Chatbot Search UI", page_icon="🤖", layout="wide")
+render_results()
 
 st.sidebar.title("Settings")
 provider = st.sidebar.selectbox(
