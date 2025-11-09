@@ -67,3 +67,14 @@ def test_f1_pred_has_pairs_but_no_labels_is_zero():
     labels = {}
     pred = [["A", "B"], ["C"]]  # predicted positives, but no gold labels → precision=0
     assert pairwise_f1(pred, labels) == pytest.approx(0.0)
+
+
+def test_pairwise_prf_known_case():
+    # Gold: [A,B], [C,D]; Pred: [A,B,C], [D]
+    labels = {"A":"X","B":"X","C":"Y","D":"Y"}
+    pred = [["A","B","C"], ["D"]]
+    prf = pairwise_prf(pred, labels)
+    # tp=1 (A,B), fp=2 (A,C),(B,C), fn=1 (C,D)
+    assert prf["precision"] == pytest.approx(1/3)
+    assert prf["recall"]    == pytest.approx(1/2)
+    assert prf["f1"]        == pytest.approx(0.4)
