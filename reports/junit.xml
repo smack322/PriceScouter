@@ -1,5 +1,33 @@
-<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="0" failures="1" skipped="0" tests="30" time="5.281" timestamp="2025-11-09T10:44:25.541310-05:00" hostname="Scotts-MacBook-Pro.local"><testcase classname="tests.test_agent_amazon" name="test_graph_has_amazon_not_keepa" time="0.001" /><testcase classname="tests.test_agent_amazon" name="test_integration_amazon_results_have_source_amazon" time="0.009" /><testcase classname="tests.test_agent_amazon" name="test_ui_amazon_search_schema_smoke" time="0.591" /><testcase classname="tests.test_clustering" name="test_normalize_text_basic" time="0.000" /><testcase classname="tests.test_clustering" name="test_tokens_and_blocking_key_deterministic" time="0.000" /><testcase classname="tests.test_clustering" name="test_normalize_brand_aliases" time="0.000" /><testcase classname="tests.test_clustering" name="test_embed_texts_cosine_similarity_monotonic" time="0.001" /><testcase classname="tests.test_clustering" name="test_dsu_union_find_basic" time="0.000" /><testcase classname="tests.test_clustering" name="test_cluster_block_respects_brand_gate_and_theta" time="0.002" /><testcase classname="tests.test_clustering" name="test_cluster_block_threshold_border" time="0.001" /><testcase classname="tests.test_clustering" name="test_stable_uuid_determinism" time="0.000" /><testcase classname="tests.test_clustering" name="test_cluster_products_end_to_end_aggregates_and_memberships" time="0.004" /><testcase classname="tests.test_clustering" name="test_cluster_products_empty_input" time="0.000" /><testcase classname="tests.test_metrics" name="test_purity_perfect_two_clusters" time="0.001" /><testcase classname="tests.test_metrics" name="test_purity_mixed_cluster" time="0.000" /><testcase classname="tests.test_metrics" name="test_purity_all_singletons_equals_label_accuracy" time="0.000" /><testcase classname="tests.test_metrics" name="test_purity_empty_pred_is_zero" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_perfect_match" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_all_singletons_vs_grouped_gold_is_zero" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_partial_merge" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_order_invariance" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_empty_everything_is_zero" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_pred_has_pairs_but_no_labels_is_zero" time="0.000" /><testcase classname="tests.test_aggregator" name="test_stats_and_medoid_for_simple_cluster" time="0.001" /><testcase classname="tests.test_aggregator" name="test_brand_gate_splits_clusters_when_brands_differ" time="0.002" /><testcase classname="tests.test_aggregator" name="test_upc_groups_split_by_brand_purity" time="0.001" /><testcase classname="tests.test_aggregator" name="test_blocking_key_is_deterministic_and_brand_sensitive" time="0.000" /><testcase classname="tests.test_aggregator" name="test_stable_uuid_is_deterministic_for_same_inputs" time="0.000" /><testcase classname="tests.test_aggregator" name="test_embed_texts_normalizes_and_nonzero_vectors" time="0.000" /><testcase classname="tests.test_vector_pg_integration" name="test_pgvector_round_trip" time="0.112"><failure message="psycopg.OperationalError: [Errno 8] nodename nor servname provided, or not known">pg_env = 'postgresql://user:pass@host:5432/dbname'
-monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x12f06a250&gt;
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="1" failures="4" skipped="0" tests="40" time="5.016" timestamp="2025-11-09T14:29:07.336869-05:00" hostname="Scotts-MacBook-Pro.local"><testcase classname="tests.test_agent_amazon" name="test_graph_has_amazon_not_keepa" time="0.001" /><testcase classname="tests.test_agent_amazon" name="test_integration_amazon_results_have_source_amazon" time="0.009" /><testcase classname="tests.test_agent_amazon" name="test_ui_amazon_search_schema_smoke" time="0.167"><failure message="ModuleNotFoundError: No module named 'backend.db'">monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x16ac397f0&gt;
+
+    def test_ui_amazon_search_schema_smoke(monkeypatch):
+&gt;       import frontend.chatbot_ui as ui
+
+tests/test_agent_amazon.py:78: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+frontend/chatbot_ui.py:18: in &lt;module&gt;
+    from frontend.ui_results import render_results
+frontend/ui_results.py:4: in &lt;module&gt;
+    from backend.queries import fetch_canonicals, fetch_variants
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+    # backend/queries.py
+    from typing import List, Dict, Any, Optional
+    import pandas as pd
+    from sqlalchemy import text
+&gt;   from .db import engine  # your SQLAlchemy engine factory
+    ^^^^^^^^^^^^^^^^^^^^^^
+E   ModuleNotFoundError: No module named 'backend.db'
+
+backend/queries.py:5: ModuleNotFoundError</failure></testcase><testcase classname="tests.test_clustering" name="test_normalize_text_basic" time="0.000" /><testcase classname="tests.test_clustering" name="test_tokens_and_blocking_key_deterministic" time="0.000" /><testcase classname="tests.test_clustering" name="test_normalize_brand_aliases" time="0.000" /><testcase classname="tests.test_clustering" name="test_embed_texts_cosine_similarity_monotonic" time="0.001" /><testcase classname="tests.test_clustering" name="test_dsu_union_find_basic" time="0.000" /><testcase classname="tests.test_clustering" name="test_cluster_block_respects_brand_gate_and_theta" time="0.002" /><testcase classname="tests.test_clustering" name="test_cluster_block_threshold_border" time="0.001" /><testcase classname="tests.test_clustering" name="test_stable_uuid_determinism" time="0.000" /><testcase classname="tests.test_clustering" name="test_cluster_products_end_to_end_aggregates_and_memberships" time="0.004" /><testcase classname="tests.test_clustering" name="test_cluster_products_empty_input" time="0.000" /><testcase classname="tests.test_metrics" name="test_purity_perfect_two_clusters" time="0.001" /><testcase classname="tests.test_metrics" name="test_purity_mixed_cluster" time="0.000" /><testcase classname="tests.test_metrics" name="test_purity_all_singletons_equals_label_accuracy" time="0.000" /><testcase classname="tests.test_metrics" name="test_purity_empty_pred_is_zero" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_perfect_match" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_all_singletons_vs_grouped_gold_is_zero" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_partial_merge" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_order_invariance" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_empty_everything_is_zero" time="0.000" /><testcase classname="tests.test_metrics" name="test_f1_pred_has_pairs_but_no_labels_is_zero" time="0.000" /><testcase classname="tests.test_metrics" name="test_pairwise_prf_known_case" time="0.000"><failure message="NameError: name 'pairwise_prf' is not defined">def test_pairwise_prf_known_case():
+        # Gold: [A,B], [C,D]; Pred: [A,B,C], [D]
+        labels = {"A":"X","B":"X","C":"Y","D":"Y"}
+        pred = [["A","B","C"], ["D"]]
+&gt;       prf = pairwise_prf(pred, labels)
+              ^^^^^^^^^^^^
+E       NameError: name 'pairwise_prf' is not defined
+
+tests/test_metrics.py:76: NameError</failure></testcase><testcase classname="tests.test_aggregator" name="test_stats_and_medoid_for_simple_cluster" time="0.001" /><testcase classname="tests.test_aggregator" name="test_brand_gate_splits_clusters_when_brands_differ" time="0.002" /><testcase classname="tests.test_aggregator" name="test_upc_groups_split_by_brand_purity" time="0.001" /><testcase classname="tests.test_aggregator" name="test_blocking_key_is_deterministic_and_brand_sensitive" time="0.000" /><testcase classname="tests.test_aggregator" name="test_stable_uuid_is_deterministic_for_same_inputs" time="0.000" /><testcase classname="tests.test_aggregator" name="test_embed_texts_normalizes_and_nonzero_vectors" time="0.000" /><testcase classname="tests.test_vector_pg_integration" name="test_pgvector_round_trip" time="0.123"><failure message="psycopg.OperationalError: [Errno 8] nodename nor servname provided, or not known">pg_env = 'postgresql://user:pass@host:5432/dbname', monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x16b38a250&gt;
 
     @pytest.mark.usefixtures("pg_env")
     def test_pgvector_round_trip(pg_env, monkeypatch):
@@ -15,11 +43,11 @@ monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x12f06a250&gt;
                ^^^^^^^^^^^^^^^^^^^^^^^
 
 tests/test_vector_pg_integration.py:40: 
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 .venv/lib/python3.13/site-packages/psycopg/connection.py:98: in connect
     attempts = conninfo_attempts(params)
                ^^^^^^^^^^^^^^^^^^^^^^^^^
-_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
 
 params = {'dbname': 'dbname', 'host': 'host', 'password': 'pass', 'port': '5432', ...}
 
@@ -56,4 +84,39 @@ params = {'dbname': 'dbname', 'host': 'host', 'password': 'pass', 'port': '5432'
 &gt;           raise e.OperationalError(str(last_exc))
 E           psycopg.OperationalError: [Errno 8] nodename nor servname provided, or not known
 
-.venv/lib/python3.13/site-packages/psycopg/_conninfo_attempts.py:53: OperationalError</failure></testcase></testsuite></testsuites>
+.venv/lib/python3.13/site-packages/psycopg/_conninfo_attempts.py:53: OperationalError</failure></testcase><testcase classname="tests.test_clustering_integration" name="test_write_canonical_and_variants" time="0.018" /><testcase classname="tests.test_unicode_and_variants" name="test_unicode_titles_embed_and_search" time="0.008"><error message="failed on setup with &quot;ModuleNotFoundError: No module named 'vector_utils'&quot;">fixturedef = &lt;FixtureDef argname='faiss_store_dummy' scope='function' baseid='tests'&gt;
+request = &lt;SubRequest 'faiss_store_dummy' for &lt;Function test_unicode_titles_embed_and_search&gt;&gt;
+
+    @pytest.hookimpl(wrapper=True)
+    def pytest_fixture_setup(fixturedef: FixtureDef, request) -&gt; object | None:
+        asyncio_mode = _get_asyncio_mode(request.config)
+        if not _is_asyncio_fixture_function(fixturedef.func):
+            if asyncio_mode == Mode.STRICT:
+                # Ignore async fixtures without explicit asyncio mark in strict mode
+                # This applies to pytest_trio fixtures, for example
+&gt;               return (yield)
+                        ^^^^^
+
+.venv/lib/python3.13/site-packages/pytest_asyncio/plugin.py:733: 
+_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _
+
+tmp_path = PosixPath('/private/var/folders/4h/_ks2dl2x1tqg5t8srstcg8xm0000gn/T/pytest-of-scottmcanally/pytest-9/test_unicode_titles_embed_and_0')
+monkeypatch = &lt;_pytest.monkeypatch.MonkeyPatch object at 0x169cfe360&gt;, dummy_embedder_384 = &lt;tests.conftest.DummyEmbedder object at 0x16b56b230&gt;
+
+    @pytest.fixture
+    def faiss_store_dummy(tmp_path, monkeypatch, dummy_embedder_384):
+        # Force FAISS backend, no network
+        monkeypatch.setenv("VECTOR_BACKEND", "faiss")
+        monkeypatch.setenv("EMBED_PROVIDER", "sbert")
+        monkeypatch.setenv("PGVECTOR_DIM", "384")
+        monkeypatch.setenv("FAISS_INDEX_PATH", str(tmp_path / "index.bin"))
+        monkeypatch.setenv("FAISS_IDS_PATH", str(tmp_path / "ids.json"))
+    
+&gt;       from vector_utils import VectorStore
+E       ModuleNotFoundError: No module named 'vector_utils'
+
+tests/conftest.py:166: ModuleNotFoundError</error></testcase><testcase classname="tests.test_unicode_and_variants" name="test_variant_extraction_from_title" time="0.000"><failure message="ModuleNotFoundError: No module named 'comparison.aggregator'">def test_variant_extraction_from_title():
+&gt;       from comparison.aggregator import extract_variant
+E       ModuleNotFoundError: No module named 'comparison.aggregator'
+
+tests/test_unicode_and_variants.py:12: ModuleNotFoundError</failure></testcase><testcase classname="tests.test_canonical_view_unit" name="test_canonical_groups_by_product_id" time="0.003" /><testcase classname="tests.test_canonical_view_unit" name="test_canonical_aggregates_min_avg_max" time="0.001" /><testcase classname="tests.test_queries_integration" name="test_fetch_canonicals_returns_one_row_per_key" time="0.007" /><testcase classname="tests.test_queries_integration" name="test_fetch_variants_lists_all_vendor_rows" time="0.002" /><testcase classname="tests.test_ui_smoke_system" name="test_streamlit_render_results_smoke" time="0.007" /><testcase classname="tests.test_regression_otterbox" name="test_otterbox_bestbuy_regression" time="0.001" /></testsuite></testsuites>

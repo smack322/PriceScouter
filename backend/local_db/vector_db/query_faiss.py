@@ -49,13 +49,25 @@ def main():
     ap.add_argument("--out-dir", default=DEF_OUT_DIR)
     ap.add_argument("--model", default=DEF_MODEL)
     ap.add_argument("-k", type=int, default=5)
-    ap.add_argument("query", nargs="+")
+    ap.add_argument("query", nargs="*")  # <- make optional
     args = ap.parse_args()
+
+    q = " ".join(args.query).strip()
+    if not q:
+        # try ENV, then prompt
+        q = os.environ.get("FAISS_QUERY", "").strip()
+    if not q:
+        try:
+            q = input("Enter search query: ").strip()
+        except EOFError:
+            q = ""
+    if not q:
+        print("No query provided. Example: python3 query_faiss.py -k 8 'iphone 13 case'")
+        return
 
     index, idmap, meta = load_index(args.out_dir)
     model = SentenceTransformer(args.model)
 
-    q = " ".join(args.query)
     hits = search(q, args.k, index, model, idmap, meta)
     for h in hits:
         print(f"[{h['rank']:>2}] score={h['score']:.3f}  id={h['product_id']}  title={h['title']}")

@@ -15,7 +15,11 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from frontend.ui_results import render_results
+import sys, pathlib
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))  # add project root
+from backend.queries import fetch_canonicals, fetch_variants
+
+from ui_results import render_results
 
 # --- Project import path (assumes this file is in frontend/ and project root is one level up) ---
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
