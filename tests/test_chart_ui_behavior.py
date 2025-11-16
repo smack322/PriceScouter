@@ -5,7 +5,7 @@ Covers:
 - UT-031-ChartRender-01  (Unit)
 - IT-031/032-FilterSync-01 (Integration)
 - UAT-031/032-Insight-01 (UAT-style functional test)
-- REG-032-TableStable-01 (Regression)
+- REG-032-TableStable-01 (Regression).
 """
 
 import pandas as pd
