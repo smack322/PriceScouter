@@ -1,7 +1,10 @@
+# frontend/components/product_chart.py
+
 from __future__ import annotations
 
 import textwrap
-from typing import Tuple
+from typing import Optional, Tuple
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -28,7 +31,6 @@ def build_product_chart_data(
         raise ValueError(f"Missing required columns for chart: {sorted(missing)}")
 
     if df.empty:
-        # caller should handle empty separately, but keep behavior explicit
         return df.copy()
 
     grouped = (
@@ -52,21 +54,62 @@ def build_product_chart_data(
 
     chart_df = grouped[grouped["canonical_title"].isin(top_product_names)].copy()
 
-    # Short label for x-axis, retain full title for tooltip
     chart_df["product_label"] = chart_df["canonical_title"].apply(
         lambda s: textwrap.shorten(str(s), width=40, placeholder="…")
     )
 
-    # Nice numeric formatting is left to Plotly hover templates
     return chart_df
 
 
-def summarize_chart(chart_df: pd.DataFrame) -> str:
+def prepare_chart_view(
+    df: pd.DataFrame,
+    selected_canonical_title: Optional[str] = None,
+    max_products: int = 20,
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Return (chart_df, mode) where mode is either 'aggregate' or 'focused'.
+
+    - Aggregate: top-N products from the filtered dataset
+    - Focused: vendor breakdown for a single selected product
+    """
+    chart_df = build_product_chart_data(df, max_products=max_products)
+
+    if not selected_canonical_title:
+        return chart_df, "aggregate"
+
+    focused = chart_df[chart_df["canonical_title"] == selected_canonical_title]
+    if focused.empty:
+        # Fallback: selection not present in filtered set → use aggregate
+        return chart_df, "aggregate"
+
+    # Focus mode: only the selected product, vendor vs avg_price
+    focused = focused.copy()
+    # Use a single, short label; they’re all the same product anyway
+    focused["product_label"] = focused["canonical_title"].apply(
+        lambda s: textwrap.shorten(str(s), width=40, placeholder="…")
+    )
+    return focused, "focused"
+
+
+def summarize_chart(
+    chart_df: pd.DataFrame,
+    mode: str = "aggregate",
+    selected_canonical_title: Optional[str] = None,
+) -> str:
     """
     Build a short textual summary for accessibility and quick scanning.
     """
     if chart_df is None or chart_df.empty:
         return "No products to summarize yet."
+
+    if mode == "focused" and selected_canonical_title:
+        n_vendors = chart_df["vendor"].nunique()
+        low = float(chart_df["min_price"].min())
+        high = float(chart_df["max_price"].max())
+        return (
+            f"Showing vendor breakdown for '{selected_canonical_title}' "
+            f"across {n_vendors} vendors; price range: ${low:,.2f}–${high:,.2f}."
+        )
 
     n_products = chart_df["canonical_title"].nunique()
     n_vendors = chart_df["vendor"].nunique()
@@ -78,18 +121,20 @@ def summarize_chart(chart_df: pd.DataFrame) -> str:
     )
 
 
-def render_product_chart(df: pd.DataFrame, max_products: int = 20) -> None:
+def render_product_chart(
+    df: pd.DataFrame,
+    selected_canonical_title: Optional[str] = None,
+    max_products: int = 20,
+) -> None:
     """
     Streamlit chart renderer.
 
-    Responsibilities:
-    - Handle loading / empty / error states
-    - Render grouped bar chart with vendor colors
-    - Provide basic accessibility (title + textual summary)
+    - Receives the *filtered* product DataFrame
+    - Optionally receives a selected product title
+    - Chooses aggregate vs focused view automatically
     """
     st.subheader("Price & Listings Chart")
 
-    # Empty / loading state
     if df is None:
         st.info("Chart will appear here after you run a search.")
         return
@@ -99,12 +144,12 @@ def render_product_chart(df: pd.DataFrame, max_products: int = 20) -> None:
         return
 
     try:
-        chart_df = build_product_chart_data(df, max_products=max_products)
+        chart_df, mode = prepare_chart_view(
+            df, selected_canonical_title=selected_canonical_title, max_products=max_products
+        )
     except Exception as exc:
-        # Error state: data issues or unexpected schema
         st.error("We couldn't render the chart for these results.")
         st.caption("If this persists, please report it along with your search parameters.")
-        # Optional: surface details in logs only, not UI
         st.debug(f"Chart error: {exc}")
         return
 
@@ -112,11 +157,16 @@ def render_product_chart(df: pd.DataFrame, max_products: int = 20) -> None:
         st.info("No results to visualize after filtering.")
         return
 
-    # Accessible wrapper around the chart
+    aria_label = (
+        "Bar chart showing average price per vendor for the selected product."
+        if mode == "focused"
+        else "Bar chart showing average price per vendor across products."
+    )
+
     st.markdown(
-        """
+        f"""
         <div role="img"
-             aria-label="Bar chart showing average price per vendor for each product.">
+             aria-label="{aria_label}">
         """,
         unsafe_allow_html=True,
     )
@@ -143,7 +193,6 @@ def render_product_chart(df: pd.DataFrame, max_products: int = 20) -> None:
         title=None,
     )
 
-    # Make it reasonably responsive / readable
     fig.update_layout(
         margin=dict(t=10, r=10, b=80, l=60),
         legend_title_text="Vendor",
@@ -151,8 +200,12 @@ def render_product_chart(df: pd.DataFrame, max_products: int = 20) -> None:
     fig.update_xaxes(tickangle=-45)
 
     st.plotly_chart(fig, use_container_width=True)
-
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # Textual summary for accessibility & quick context
-    st.caption(summarize_chart(chart_df))
+    st.caption(
+        summarize_chart(
+            chart_df,
+            mode=mode,
+            selected_canonical_title=selected_canonical_title,
+        )
+    )

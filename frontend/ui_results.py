@@ -2,6 +2,8 @@
 import pandas as pd
 import streamlit as st
 from backend.queries import fetch_canonicals, fetch_variants
+from frontend.components.product_chart import render_product_chart
+from frontend.components.product_filtering import apply_product_filters
 
 from frontend.components.product_chart import render_product_chart
 
@@ -11,11 +13,20 @@ def _money(x):
 def _link(text, url):
     return f"[{text}]({url})" if url else text
 
+
 def render_results():
     st.subheader("Product Results (Canonical)")
-    c1, c2 = st.columns([2,1])
+
+    # --- Controls row ---
+    c1, c2, c3 = st.columns([2, 1.3, 1.7])
+
     with c1:
-        q = st.text_input("Filter products", "", placeholder="e.g., iPhone 15 case")
+        search_text = st.text_input(
+            "Filter products",
+            "",
+            placeholder="e.g., iPhone 15 case",
+        )
+
     with c2:
         limit = st.number_input("Max rows", 10, 1000, 200, step=10)
 
