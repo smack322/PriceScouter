@@ -3,6 +3,8 @@ import pandas as pd
 import streamlit as st
 from backend.queries import fetch_canonicals, fetch_variants
 
+from frontend.components.product_chart import render_product_chart
+
 def _money(x):
     return "" if x is None or pd.isna(x) else f"${x:,.2f}"
 
@@ -45,3 +47,5 @@ def render_results():
             if "price" in vdf.columns:
                 vdf["price"] = vdf["price"].map(_money)
             st.dataframe(vdf[cols], use_container_width=True, hide_index=True)
+    st.markdown("### Pricing & Listing Patterns")
+    render_product_chart(df)
