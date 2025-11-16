@@ -3,6 +3,10 @@ import pandas as pd
 import streamlit as st
 from backend.queries import fetch_canonicals, fetch_variants
 
+import sys, pathlib
+sys.path.append(str(pathlib.Path(__file__).resolve().parents[1]))  # add project root
+from backend.queries import fetch_canonicals, fetch_variants
+
 def _money(x):
     return "" if x is None or pd.isna(x) else f"${x:,.2f}"
 
