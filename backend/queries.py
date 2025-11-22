@@ -4,6 +4,15 @@ import pandas as pd
 from sqlalchemy import text
 from .db import engine  # your SQLAlchemy engine factory
 
+from .chart_adapter import df_to_chart_points
+
+def fetch_chart_data_for_search(search_id: int) -> list[dict]:
+    """
+    Returns a list[ChartPointDict] for the chart UI.
+    """
+    df: pd.DataFrame = fetch_canonicals_for_chart(search_id)  # your existing query
+    return df_to_chart_points(df)
+
 def fetch_canonicals(limit: int = 200, q: Optional[str] = None) -> pd.DataFrame:
     where = ""
     params = {"limit": limit}
