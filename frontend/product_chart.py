@@ -9,6 +9,9 @@ import pandas as pd
 import plotly.express as px
 import streamlit as st
 
+from backend.queries import fetch_chart_data_for_search
+from backend.telemetry import log_chart_event
+
 
 REQUIRED_COLS = {"canonical_title", "vendor", "total_price"}
 
@@ -209,3 +212,30 @@ def render_product_chart(
             selected_canonical_title=selected_canonical_title,
         )
     )
+def render_product_price_chart(search_id: int) -> None:
+    chart_data = fetch_chart_data_for_search(search_id)
+
+    if not chart_data:
+        st.info("No chart data available for this search yet.")
+        return
+
+    log_chart_event("chart_rendered", search_id=search_id, count=len(chart_data))
+
+    df = pd.DataFrame(chart_data)
+
+    fig = px.bar(
+        df,
+        x="label",
+        y="avg_price",
+        color="vendor",
+        hover_data=["min_price", "max_price", "listing_count"],
+    )
+
+    # Capture interactions via selection
+    selection = st.plotly_chart(fig, use_container_width=True)
+
+    # (Streamlit doesn’t have deep client-side hooks, so we log server-side events)
+    # For example, log when the user changes the selected product label via another UI control:
+    selected_label = st.selectbox("Highlight product", df["label"].unique())
+    if selected_label:
+        log_chart_event("product_selection_changed", search_id=search_id, label=selected_label)
