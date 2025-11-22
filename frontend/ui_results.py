@@ -1,6 +1,13 @@
 # frontend/ui_results.py
 import pandas as pd
 import streamlit as st
+import sys
+import pathlib
+
+# --- ensure project root is on sys.path ---
+ROOT = pathlib.Path(__file__).resolve().parents[1]  # parent directory that has /backend and /frontend
+if str(ROOT) not in sys.path:
+    sys.path.append(str(ROOT))
 from backend.queries import fetch_canonicals, fetch_variants
 from frontend.components.product_chart import render_product_chart
 from frontend.components.product_filtering import apply_product_filters
