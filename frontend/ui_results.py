@@ -13,6 +13,7 @@ from frontend.components.product_chart import render_product_chart
 from frontend.components.product_filtering import apply_product_filters
 
 from frontend.components.product_chart import render_product_chart
+from backend.chart_adapter import df_to_chart_points
 
 def _money(x):
     return "" if x is None or pd.isna(x) else f"${x:,.2f}"
@@ -67,3 +68,42 @@ def render_results():
             st.dataframe(vdf[cols], use_container_width=True, hide_index=True)
     st.markdown("### Pricing & Listing Patterns")
     render_product_chart(df)
+
+def render_results_table(results_df: pd.DataFrame) -> None:
+    chart_points = df_to_chart_points(results_df)
+
+    if not chart_points:
+        st.info("No results found.")
+        return
+
+    # Convert to DataFrame for display
+    table_df = pd.DataFrame(chart_points)
+
+    # Choose the columns you actually want to show in the UI
+    display_cols = [
+        "label",
+        "vendor",
+        "avg_price",
+        "est_cost",
+        "platform_fees",
+        "net_profit",
+        "roi_pct",
+    ]
+
+    available_cols = [c for c in display_cols if c in table_df.columns]
+
+    st.subheader("Product Results (with Profit Estimates)")
+    st.dataframe(
+        table_df[available_cols].rename(
+            columns={
+                "label": "Product",
+                "vendor": "Vendor",
+                "avg_price": "Sale $",
+                "est_cost": "Est. Cost $",
+                "platform_fees": "Fees $",
+                "net_profit": "Net Profit $",
+                "roi_pct": "ROI %",
+            }
+        ),
+        use_container_width=True,
+    )
