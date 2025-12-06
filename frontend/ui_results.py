@@ -9,10 +9,10 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]  # parent directory that has 
 if str(ROOT) not in sys.path:
     sys.path.append(str(ROOT))
 from backend.queries import fetch_canonicals, fetch_variants
-from frontend.components.product_chart import render_product_chart
-from frontend.components.product_filtering import apply_product_filters
+from frontend.product_chart import render_product_chart
+from frontend.product_filtering import apply_product_filters
 
-from frontend.components.product_chart import render_product_chart
+from frontend.product_chart import render_product_chart
 from backend.chart_adapter import df_to_chart_points
 
 def _money(x):
