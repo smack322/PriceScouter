@@ -35,6 +35,8 @@ from agents.agent_amazon import amazon_products
 from backend.local_db.vector_db.index_sync import sync_canonical_index
 from comparison.canonical_service import search_canonical_with_sync
 
+from frontend.product_chart import render_product_chart
+
 @st.cache_resource
 def ensure_index_synced_once():
     # Runs once per process, avoids repeated rebuilds on every rerun
@@ -54,19 +56,51 @@ if st.button("Search"):
 
     # Show canonical / similar products section
     st.subheader("Canonical / Similar Products")
-    canonical_results = search_canonical_with_sync(query, k=5)
+    canonical_results = search_canonical_with_sync(query, k=10)
 
-    for r in canonical_results:
-        st.write(f"**{r['title']}**")
-        st.write(
-            f"Avg price: {r['avg_price']} (min {r['min_price']}, "
-            f"max {r['max_price']}) — sellers: {r['seller_count']}, "
-            f"listings: {r['total_listings']}"
-        )
-        if r["representative_url"]:
-            st.write(r["representative_url"])
-        st.write("---")
-# Optional SerpApi import (fallback path)
+    if not canonical_results:
+        st.info("No canonical matches yet for this query.")
+    else:
+        # Show the raw canonical summary list
+        for r in canonical_results:
+            st.write(f"**{r['title']}**")
+            st.write(
+                f"Avg price: {r['avg_price']} (min {r['min_price']}, "
+                f"max {r['max_price']}) — sellers: {r['seller_count']}, "
+                f"listings: {r['total_listings']}"
+            )
+            if r["representative_url"]:
+                st.write(r["representative_url"])
+            st.write("---")
+
+        # --- Build a DataFrame suitable for charts ---
+        canon_df = pd.DataFrame(canonical_results)
+
+        # For render_product_chart: need canonical_title, vendor, total_price
+        canon_df["canonical_title"] = canon_df["title"]
+        # Treat this as aggregate over all sellers for now
+        canon_df["vendor"] = "All vendors"
+        # Use avg_price as the "total_price" metric for the chart
+        canon_df["total_price"] = canon_df["avg_price"]
+
+        # For chart_adapter / profit: rename total_listings -> listing_count
+        canon_df["listing_count"] = canon_df["total_listings"].fillna(0).astype(int)
+        canon_df["currency"] = "USD"
+
+        st.markdown("### Canonical Price Chart")
+        try:
+            render_product_chart(canon_df, selected_canonical_title=None, max_products=10)
+        except Exception as exc:
+            st.error("Could not render canonical chart.")
+            st.caption(f"Debug: {exc}")
+
+        # Optional: profit table, if compute_profit is wired up
+        # st.markdown("### Canonical Profit View")
+        # try:
+        #     render_results_table(canon_df)
+        # except Exception as exc:
+        #     st.info("Profit table not available yet (cost inputs missing or compute_profit not configured).")
+        #     st.caption(f"Debug: {exc}")
 try:
     from serpapi import GoogleSearch
     SERPAPI_AVAILABLE = True
