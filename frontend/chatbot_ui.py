@@ -32,6 +32,40 @@ from agents.agent_keepa import keepa_search
 from agents.agent_ebay import ebay_search
 from agents.agent_amazon import amazon_products
 
+from backend.local_db.vector_db.index_sync import sync_canonical_index
+from comparison.canonical_service import search_canonical_with_sync
+
+@st.cache_resource
+def ensure_index_synced_once():
+    # Runs once per process, avoids repeated rebuilds on every rerun
+    source_count, index_count = sync_canonical_index(force=False)
+    return source_count, index_count
+
+# Call this early in your app
+source_count, index_count = ensure_index_synced_once()
+st.sidebar.write(f"Canonical index: {index_count} vectors (source rows: {source_count})")
+
+from comparison.canonical_service import search_canonical_with_sync
+
+query = st.text_input("What product are you looking for?")
+
+if st.button("Search"):
+    # your existing multi-vendor flow here...
+
+    # Show canonical / similar products section
+    st.subheader("Canonical / Similar Products")
+    canonical_results = search_canonical_with_sync(query, k=5)
+
+    for r in canonical_results:
+        st.write(f"**{r['title']}**")
+        st.write(
+            f"Avg price: {r['avg_price']} (min {r['min_price']}, "
+            f"max {r['max_price']}) — sellers: {r['seller_count']}, "
+            f"listings: {r['total_listings']}"
+        )
+        if r["representative_url"]:
+            st.write(r["representative_url"])
+        st.write("---")
 # Optional SerpApi import (fallback path)
 try:
     from serpapi import GoogleSearch
