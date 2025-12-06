@@ -25,6 +25,7 @@ pathlib
 sentence-transformers
 faiss-cpu
 psycopg[binary]>=3.2
+sqlite3
 
 
 
